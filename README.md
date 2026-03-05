@@ -41,7 +41,7 @@ That's it!
 
 ### 1. Configure Your Secret
 
-Get your Notion integration token from [notion.so/my-integrations](https://www.notion.so/my-integrations).
+Get your Notion integration token from [https://www.notion.so/profile/integrations/internal](https://www.notion.so/profile/integrations/internal).
 
 ```bash
 ./notion configure
@@ -57,9 +57,6 @@ You'll be prompted to paste your secret. It's saved to `~/.config/notion-cli/con
 
 # Control results
 ./notion search --page-size 5 "meeting notes"
-
-# Sort by creation time instead
-./notion search --sort-timestamp created_time "meeting notes"
 
 # Pagination: use next_cursor from the metadata block
 ./notion search --start-cursor 2afd4d83-8b76-807e-a556-cae88e10b8a8 "meeting notes"
