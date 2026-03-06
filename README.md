@@ -27,11 +27,15 @@ notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
 
 You need `uv` (the Python script runner). [Install it here](https://docs.astral.sh/uv/).
 
-Then just make the script executable:
+Then download and install the script with:
 
 ```bash
-chmod +x notion
+mkdir -p ~/.local/bin
+curl -fSL -o ~/.local/bin/notion https://raw.githubusercontent.com/living42/notion-cli/refs/heads/main/notion
+chmod +x ~/.local/bin/notion
 ```
+
+> **Note:** Make sure `~/.local/bin` is in your `PATH`. You can add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile (e.g. `~/.bashrc` or `~/.zshrc`) if it isn't already.
 
 That's it!
 
@@ -44,7 +48,7 @@ That's it!
 Get your Notion integration token from [https://www.notion.so/profile/integrations/internal](https://www.notion.so/profile/integrations/internal).
 
 ```bash
-./notion configure
+notion configure
 ```
 
 You'll be prompted to paste your secret. It's saved to `~/.config/notion-cli/config.json` and never uploaded.
@@ -53,13 +57,13 @@ You'll be prompted to paste your secret. It's saved to `~/.config/notion-cli/con
 
 ```bash
 # Basic search
-./notion search "meeting notes"
+notion search "meeting notes"
 
 # Control results
-./notion search --page-size 5 "meeting notes"
+notion search --page-size 5 "meeting notes"
 
 # Pagination: use next_cursor from the metadata block
-./notion search --start-cursor 2afd4d83-8b76-807e-a556-cae88e10b8a8 "meeting notes"
+notion search --start-cursor 2afd4d83-8b76-807e-a556-cae88e10b8a8 "meeting notes"
 ```
 
 **Output** — Each result is a tidy Markdown section with title, type, URL, parent, and timestamps. Pagination state is in the metadata block at the bottom.
@@ -92,10 +96,10 @@ request_id: req-001...
 
 ```bash
 # Fetch a full page
-./notion fetch-page abc123def456abc123def456abc123de
+notion fetch-page abc123def456abc123def456abc123de
 
 # View only the first 30 lines
-./notion fetch-page abc123def456abc123def456abc123de --slice 0-30
+notion fetch-page abc123def456abc123def456abc123de --slice 0-30
 ```
 
 **Output** — The page title and URL at the top, followed by its Markdown body, with metadata at the bottom.
@@ -136,7 +140,7 @@ Print help and list all available commands.
 Set up or reconfigure your Notion integration secret. Prompts for confirmation if a config already exists.
 
 ```bash
-./notion configure
+notion configure
 ```
 
 ### `notion search [OPTIONS] [QUERY]`
@@ -155,13 +159,13 @@ Search pages and databases in your Notion workspace.
 
 ```bash
 # Simple search
-./notion search "Q1 planning"
+notion search "Q1 planning"
 
 # 20 results, sorted by creation time
-./notion search --page-size 20 --sort-timestamp created_time "Q1 planning"
+notion search --page-size 20 --sort-timestamp created_time "Q1 planning"
 
 # Paginate: get the next batch
-./notion search --start-cursor "2afd4d83-8b76-807e..." "Q1 planning"
+notion search --start-cursor "2afd4d83-8b76-807e..." "Q1 planning"
 ```
 
 ### `notion fetch-page PAGE_ID [OPTIONS]`
@@ -177,13 +181,13 @@ Retrieve a single Notion page as Markdown.
 
 ```bash
 # Fetch a full page
-./notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
+notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
 
 # Get only the first 20 lines
-./notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 0-20
+notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 0-20
 
 # Skip the first 50 lines, show next 30
-./notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 50-80
+notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 50-80
 ```
 
 ---
@@ -202,19 +206,19 @@ Retrieve a single Notion page as Markdown.
 **LLM Agents & Automation:**
 ```bash
 # Fetch and pipe into an LLM
-./notion search "bugs" | llm -m gpt-4 "summarize these Notion search results"
+notion search "bugs" | llm -m gpt-4 "summarize these Notion search results"
 
 # Read a page and analyze it
-./notion fetch-page <page_id> | llm -m claude "extract todos from this page"
+notion fetch-page <page_id> | llm -m claude "extract todos from this page"
 ```
 
 **Scripting & Data Export:**
 ```bash
 # Export all pages matching a query
-./notion search --page-size 100 | jq '.[] | .url'
+notion search --page-size 100 | jq '.[] | .url'
 
 # Get the first 100 lines of a large page
-./notion fetch-page <page_id> --slice 0-100 > page_excerpt.md
+notion fetch-page <page_id> --slice 0-100 > page_excerpt.md
 ```
 
 **Integration with Other Tools:**
@@ -228,10 +232,10 @@ Retrieve a single Notion page as Markdown.
 ## Troubleshooting
 
 **"No config found"**
-Run `./notion configure` to set up your integration secret.
+Run `notion configure` to set up your integration secret.
 
 **"Error 401: Unauthorized"**
-Your secret is invalid or expired. Run `./notion configure` again.
+Your secret is invalid or expired. Run `notion configure` again.
 
 **"Error 404: Not found"**
 The page UUID doesn't exist or your integration doesn't have access to it. Check the ID and page permissions in Notion.
@@ -251,7 +255,7 @@ Config is stored in plain JSON at `~/.config/notion-cli/config.json`:
 }
 ```
 
-You can edit it directly if needed, but `./notion configure` is safer.
+You can edit it directly if needed, but `notion configure` is safer.
 
 ---
 
