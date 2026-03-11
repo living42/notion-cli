@@ -1,3 +1,10 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "httpx",
+# ]
+# ///
 import argparse
 import json
 import sys
@@ -8,6 +15,8 @@ import httpx
 
 NOTION_VERSION = "2025-09-03"
 CONFIG_PATH = Path.home() / ".config" / "notion-cli" / "config.json"
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +83,38 @@ def get_profile_secret(config: dict, profile: str) -> str:
         sys.exit(1)
 
     return secret.strip()
+
+
+# ---------------------------------------------------------------------------
+# Validation + parsing helpers
+# ---------------------------------------------------------------------------
+
+def normalize_notion_id(raw_id: str, object_label: str) -> str:
+    value = raw_id.strip()
+    if UUID_RE.fullmatch(value):
+        return value.lower()
+
+    if HEX32_RE.fullmatch(value):
+        value = value.lower()
+        return f"{value[0:8]}-{value[8:12]}-{value[12:16]}-{value[16:20]}-{value[20:32]}"
+
+    print(f"Invalid {object_label} ID: {raw_id}", file=sys.stderr)
+    sys.exit(1)
+
+
+def parse_json_option(raw: str, expected_type: type, flag: str):
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON for {flag}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(parsed, expected_type):
+        expected = "array" if expected_type is list else "object"
+        print(f"Invalid {flag}: expected JSON {expected}.", file=sys.stderr)
+        sys.exit(1)
+
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -147,22 +188,30 @@ def cmd_configure(args) -> None:
 # ---------------------------------------------------------------------------
 
 def extract_title(page: dict) -> str:
-    """Extract plain-text title from a page or database result."""
+    """Extract plain-text title from a page/database/data_source-like object."""
     props = page.get("properties", {})
-    # Pages store title under a property of type "title"
-    for prop in props.values():
-        if prop.get("type") == "title":
-            parts = prop.get("title", [])
-            return "".join(p.get("plain_text", "") for p in parts)
-    # Databases expose title at top level
+    if isinstance(props, dict):
+        for prop in props.values():
+            if isinstance(prop, dict) and prop.get("type") == "title":
+                parts = prop.get("title", [])
+                title = "".join(p.get("plain_text", "") for p in parts if isinstance(p, dict)).strip()
+                if title:
+                    return title
+
     title_list = page.get("title", [])
-    if title_list:
-        return "".join(p.get("plain_text", "") for p in title_list)
-    return "(untitled)"
+    if isinstance(title_list, list) and title_list:
+        title = "".join(p.get("plain_text", "") for p in title_list if isinstance(p, dict)).strip()
+        if title:
+            return title
+
+    name = page.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+
+    return "Untitled"
 
 
 def extract_icon(page: dict) -> str:
-    """Return emoji icon prefix (with trailing space) or empty string."""
     icon = page.get("icon")
     if icon and icon.get("type") == "emoji":
         return icon["emoji"] + " "
@@ -179,7 +228,35 @@ def format_parent(parent: dict) -> str:
         return f"page `{parent['page_id']}`"
     if ptype == "database_id":
         return f"database `{parent['database_id']}`"
+    if ptype == "data_source_id":
+        return f"data_source `{parent['data_source_id']}`"
     return ptype
+
+
+def render_metadata_block(meta_lines: list[str]) -> str:
+    return "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
+
+
+def print_pretty_json(data: dict) -> None:
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def collect_property_lines(obj: dict) -> list[str]:
+    properties = obj.get("properties", {})
+    if not isinstance(properties, dict):
+        return []
+
+    entries: list[tuple[str, str]] = []
+    for name, prop in properties.items():
+        if not isinstance(name, str):
+            continue
+        ptype = "unknown"
+        if isinstance(prop, dict) and isinstance(prop.get("type"), str):
+            ptype = prop["type"]
+        entries.append((name, ptype))
+
+    entries.sort(key=lambda x: (0 if x[1] == "title" else 1, x[0].lower()))
+    return [f"- {name} (`{ptype}`)" for name, ptype in entries]
 
 
 def format_search_result(page: dict) -> str:
@@ -194,9 +271,10 @@ def format_search_result(page: dict) -> str:
     lines = [
         f"## {icon}{title}",
         f"- **Type:** {obj_type}",
-        f"- **URL:** {url}",
-        f"- **Parent:** {parent}",
     ]
+    if url:
+        lines.append(f"- **URL:** {url}")
+    lines.append(f"- **Parent:** {parent}")
     if created:
         lines.append(f"- **Created:** {created}")
     if edited:
@@ -207,11 +285,10 @@ def format_search_result(page: dict) -> str:
 def format_search_output(data: dict) -> str:
     results = data.get("results", [])
     sections = [format_search_result(r) for r in results]
-    body = "\n\n".join(sections)
+    body = "\n\n".join(sections) if sections else "_No results._"
 
-    # Metadata block
     meta_lines = []
-    if data.get("has_more"):
+    if data.get("has_more") is True:
         meta_lines.append("has_more: true")
     next_cursor = data.get("next_cursor")
     if next_cursor:
@@ -221,24 +298,18 @@ def format_search_output(data: dict) -> str:
         meta_lines.append(f"request_id: {request_id}")
 
     if meta_lines:
-        meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
-        return body + "\n\n---\n\n" + meta
+        return body + "\n\n---\n\n" + render_metadata_block(meta_lines)
     return body
 
 
 def convert_notion_markdown(raw: str) -> str:
-    """Convert Notion-flavoured XML tags in the markdown string to standard Markdown."""
-    # <page url="URL">Title</page>  →  [Title](URL)
     raw = re.sub(r'<page url="([^"]+)">([^<]*)</page>', r'[\2](\1)', raw)
-    # strip <empty-block/>
     raw = re.sub(r'<empty-block\s*/>', '', raw)
-    # clean up excess blank lines left by stripped tags
     raw = re.sub(r'\n{3,}', '\n\n', raw)
     return raw.strip()
 
 
 def format_fetch_output(data: dict, page_meta: dict, slice_range: tuple[int, int] | None = None) -> str:
-    # Header: title + URL
     icon = extract_icon(page_meta)
     title = extract_title(page_meta)
     url = page_meta.get("url", "")
@@ -250,7 +321,6 @@ def format_fetch_output(data: dict, page_meta: dict, slice_range: tuple[int, int
     raw_md = data.get("markdown", "")
     body = convert_notion_markdown(raw_md)
 
-    # Apply line slice to body only
     if slice_range is not None:
         start, end = slice_range
         body_lines = body.splitlines()
@@ -265,8 +335,102 @@ def format_fetch_output(data: dict, page_meta: dict, slice_range: tuple[int, int
     ]
     if slice_range is not None:
         meta_lines.append(f"slice: {slice_range[0]}-{slice_range[1]}")
-    meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
-    return header + "\n\n" + body + "\n\n---\n\n" + meta
+
+    return header + "\n\n" + body + "\n\n---\n\n" + render_metadata_block(meta_lines)
+
+
+def format_database_markdown(obj: dict) -> str:
+    icon = extract_icon(obj)
+    title = extract_title(obj)
+    lines = [
+        f"# {icon}{title}",
+        f"**Type:** {obj.get('object', 'database')}",
+        f"**ID:** {obj.get('id', '')}",
+    ]
+
+    if obj.get("url"):
+        lines.append(f"**URL:** {obj['url']}")
+    if obj.get("parent"):
+        lines.append(f"**Parent:** {format_parent(obj['parent'])}")
+    if obj.get("created_time"):
+        lines.append(f"**Created:** {obj['created_time']}")
+    if obj.get("last_edited_time"):
+        lines.append(f"**Last edited:** {obj['last_edited_time']}")
+
+    property_lines = collect_property_lines(obj)
+    if property_lines:
+        lines.append("\n## Properties")
+        lines.extend(property_lines)
+
+    meta_lines = [
+        f"object: {obj.get('object', 'database')}",
+        f"database_id: {obj.get('id', '')}",
+    ]
+    if "archived" in obj:
+        meta_lines.append(f"archived: {str(bool(obj.get('archived'))).lower()}")
+    if "in_trash" in obj:
+        meta_lines.append(f"in_trash: {str(bool(obj.get('in_trash'))).lower()}")
+    if obj.get("request_id"):
+        meta_lines.append(f"request_id: {obj['request_id']}")
+
+    return "\n".join(lines) + "\n\n---\n\n" + render_metadata_block(meta_lines)
+
+
+def format_data_source_markdown(obj: dict) -> str:
+    icon = extract_icon(obj)
+    title = extract_title(obj)
+    lines = [
+        f"# {icon}{title}",
+        f"**Type:** {obj.get('object', 'data_source')}",
+        f"**ID:** {obj.get('id', '')}",
+    ]
+
+    if obj.get("url"):
+        lines.append(f"**URL:** {obj['url']}")
+    if obj.get("parent"):
+        lines.append(f"**Parent:** {format_parent(obj['parent'])}")
+    if obj.get("created_time"):
+        lines.append(f"**Created:** {obj['created_time']}")
+    if obj.get("last_edited_time"):
+        lines.append(f"**Last edited:** {obj['last_edited_time']}")
+
+    property_lines = collect_property_lines(obj)
+    if property_lines:
+        lines.append("\n## Properties")
+        lines.extend(property_lines)
+
+    meta_lines = [
+        f"object: {obj.get('object', 'data_source')}",
+        f"data_source_id: {obj.get('id', '')}",
+    ]
+    if "archived" in obj:
+        meta_lines.append(f"archived: {str(bool(obj.get('archived'))).lower()}")
+    if "in_trash" in obj:
+        meta_lines.append(f"in_trash: {str(bool(obj.get('in_trash'))).lower()}")
+    if obj.get("request_id"):
+        meta_lines.append(f"request_id: {obj['request_id']}")
+
+    return "\n".join(lines) + "\n\n---\n\n" + render_metadata_block(meta_lines)
+
+
+def format_data_source_query_markdown(resp: dict, data_source_id: str) -> str:
+    results = resp.get("results", [])
+    sections = [format_search_result(r) for r in results]
+    body = "\n\n".join(sections) if sections else "_No results._"
+
+    meta_lines = [
+        "object: list",
+        "source: data_source_query",
+        f"data_source_id: {data_source_id}",
+    ]
+    if resp.get("has_more") is True:
+        meta_lines.append("has_more: true")
+    if resp.get("next_cursor"):
+        meta_lines.append(f"next_cursor: {resp['next_cursor']}")
+    if resp.get("request_id"):
+        meta_lines.append(f"request_id: {resp['request_id']}")
+
+    return body + "\n\n---\n\n" + render_metadata_block(meta_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -293,14 +457,16 @@ def cmd_search(args) -> None:
         body["start_cursor"] = args.start_cursor
 
     if args.page_size is not None:
+        if args.page_size < 1 or args.page_size > 100:
+            print("--page-size must be between 1 and 100.", file=sys.stderr)
+            sys.exit(1)
         body["page_size"] = args.page_size
 
     result = notion_post("/v1/search", secret, body)
-    print(format_search_output(result))
+    print_pretty_json(result)
 
 
 def parse_slice(value: str) -> tuple[int, int]:
-    """Parse 'n-m' into (n, m). Raises argparse-friendly ValueError on bad input."""
     parts = value.split("-")
     if len(parts) != 2:
         raise argparse.ArgumentTypeError(f"--slice must be in the form N-M, got: {value!r}")
@@ -318,12 +484,66 @@ def cmd_fetch_page(args) -> None:
     config = load_config()
     secret = get_profile_secret(config, profile)
 
-    # Fetch page metadata and markdown content
-    page_meta = notion_get(f"/v1/pages/{args.page_id}", secret)
-    data = notion_get(f"/v1/pages/{args.page_id}/markdown", secret)
+    page_id = normalize_notion_id(args.page_id, "page")
+    page_meta = notion_get(f"/v1/pages/{page_id}", secret)
+    data = notion_get(f"/v1/pages/{page_id}/markdown", secret)
 
     slice_range = parse_slice(args.slice) if args.slice else None
     print(format_fetch_output(data, page_meta, slice_range))
+
+
+def cmd_fetch_database(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = load_config()
+    secret = get_profile_secret(config, profile)
+
+    database_id = normalize_notion_id(args.database_id, "database")
+    data = notion_get(f"/v1/databases/{database_id}", secret)
+    print_pretty_json(data)
+
+
+def cmd_fetch_data_source(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = load_config()
+    secret = get_profile_secret(config, profile)
+
+    data_source_id = normalize_notion_id(args.data_source_id, "data source")
+    data = notion_get(f"/v1/data_sources/{data_source_id}", secret)
+    print_pretty_json(data)
+
+
+def cmd_query_data_source(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = load_config()
+    secret = get_profile_secret(config, profile)
+
+    data_source_id = normalize_notion_id(args.data_source_id, "data source")
+
+    payload: dict = {}
+
+    if args.sorts is not None:
+        payload["sorts"] = parse_json_option(args.sorts, list, "--sorts")
+
+    if args.filter is not None:
+        payload["filter"] = parse_json_option(args.filter, dict, "--filter")
+
+    if args.start_cursor:
+        payload["start_cursor"] = args.start_cursor
+
+    if args.page_size is not None:
+        if args.page_size < 1 or args.page_size > 100:
+            print("--page-size must be between 1 and 100.", file=sys.stderr)
+            sys.exit(1)
+        payload["page_size"] = args.page_size
+
+    if args.in_trash:
+        payload["in_trash"] = True
+
+    if args.result_type:
+        payload["result_type"] = args.result_type
+
+    resp = notion_post(f"/v1/data_sources/{data_source_id}/query", secret, payload)
+    print_pretty_json(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +563,7 @@ def add_profile_argument(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notion",
-        description="Lightweight Notion CLI for searching and reading pages.",
+        description="Lightweight Notion CLI for searching and reading pages, databases, and data sources.",
     )
     add_profile_argument(parser)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -407,6 +627,72 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output only lines N through M of the page body (0-indexed, e.g. --slice 0-20).",
     )
 
+    # fetch-database
+    fetch_db_p = sub.add_parser(
+        "fetch-database",
+        help="Fetch a Notion database and print formatted JSON.",
+    )
+    fetch_db_p.add_argument(
+        "database_id",
+        help="The UUID of the Notion database to fetch.",
+    )
+
+    # fetch-data-source
+    fetch_ds_p = sub.add_parser(
+        "fetch-data-source",
+        help="Fetch a Notion data source and print formatted JSON.",
+    )
+    fetch_ds_p.add_argument(
+        "data_source_id",
+        help="The UUID of the Notion data source to fetch.",
+    )
+
+    # query-data-source
+    query_ds_p = sub.add_parser(
+        "query-data-source",
+        help="Query a Notion data source and print formatted JSON.",
+    )
+    query_ds_p.add_argument(
+        "data_source_id",
+        help="The UUID of the Notion data source to query.",
+    )
+    query_ds_p.add_argument(
+        "--sorts",
+        default=None,
+        metavar="JSON",
+        help="JSON array for Notion query sorts.",
+    )
+    query_ds_p.add_argument(
+        "--filter",
+        default=None,
+        metavar="JSON",
+        help="JSON object for Notion query filter.",
+    )
+    query_ds_p.add_argument(
+        "--start-cursor",
+        default=None,
+        metavar="UUID",
+        help="Pagination cursor (UUID) from a previous response.",
+    )
+    query_ds_p.add_argument(
+        "--page-size",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Number of results to return, max 100 (default: 10).",
+    )
+    query_ds_p.add_argument(
+        "--in-trash",
+        action="store_true",
+        help="Include trashed entries.",
+    )
+    query_ds_p.add_argument(
+        "--result-type",
+        default=None,
+        metavar="TYPE",
+        help="Optional Notion result_type filter.",
+    )
+
     return parser
 
 
@@ -453,6 +739,12 @@ def main() -> None:
         cmd_search(args)
     elif args.command == "fetch-page":
         cmd_fetch_page(args)
+    elif args.command == "fetch-database":
+        cmd_fetch_database(args)
+    elif args.command == "fetch-data-source":
+        cmd_fetch_data_source(args)
+    elif args.command == "query-data-source":
+        cmd_query_data_source(args)
     else:
         parser.print_help()
 

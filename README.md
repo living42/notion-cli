@@ -1,12 +1,12 @@
 # notion-cli
 
-A lightweight, zero-setup command-line tool to search and read your Notion pages. Perfect for scripting, LLM integrations, and automation.
+A lightweight, zero-setup command-line tool to search and read your Notion workspace. Perfect for scripting, LLM integrations, and automation.
 
 ```bash
-# Search your Notion workspace
+# Search your Notion workspace (formatted JSON)
 notion search "project roadmap"
 
-# Read a page as clean Markdown
+# Read a page as Markdown
 notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
 ```
 
@@ -15,11 +15,11 @@ notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
 ## Features
 
 - **One-liner installation** — No `pip install`, no virtual environments. Just run it.
-- **Clean Markdown output** — Notion XML is auto-converted to readable Markdown links
-- **Human & machine-friendly** — Output is both easy to read and easy to parse
-- **Pagination support** — Walk through large result sets with cursors
-- **Slice large pages** — View only the lines you need with `--slice`
-- **Metadata preserved** — API metadata in hidden HTML comments for traceability
+- **Formatted JSON output** — `search`, `fetch-database`, `fetch-data-source`, and `query-data-source` return pretty JSON.
+- **Markdown page rendering** — `fetch-page` converts Notion XML tags to readable Markdown links.
+- **Pagination support** — Walk through large result sets with cursors.
+- **Slice large pages** — View only the lines you need with `fetch-page --slice`.
+- **Multi-profile config** — Use different Notion tokens with `-p/--profile`.
 
 ---
 
@@ -69,34 +69,26 @@ notion search "meeting notes"
 # Control results
 notion search --page-size 5 "meeting notes"
 
-# Pagination: use next_cursor from the metadata block
+# Pagination: use next_cursor from the JSON response
 notion search --start-cursor 2afd4d83-8b76-807e-a556-cae88e10b8a8 "meeting notes"
 ```
 
-**Output** — Each result is a tidy Markdown section with title, type, URL, parent, and timestamps. Pagination state is in the metadata block at the bottom.
+**Output** — Formatted JSON from Notion's search endpoint.
 
-```markdown
-## 💼 Q1 Planning
-- **Type:** page
-- **URL:** https://www.notion.so/Q1-Planning-abc123...
-- **Parent:** workspace
-- **Created:** 2025-01-15T10:30:00.000Z
-- **Last edited:** 2026-03-05T14:22:00.000Z
-
-## 📋 Engineering Roadmap
-- **Type:** page
-- **URL:** https://www.notion.so/Engineering-Roadmap-def456...
-- **Parent:** page `abc123...`
-- **Created:** 2026-02-01T09:00:00.000Z
-- **Last edited:** 2026-03-04T16:45:00.000Z
-
----
-
-<!-- metadata
-has_more: true
-next_cursor: xyz789...
-request_id: req-001...
--->
+```json
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "page",
+      "id": "2afd4d83-8b76-8095-9ef6-ed75cd5c579c",
+      "url": "https://www.notion.so/..."
+    }
+  ],
+  "has_more": true,
+  "next_cursor": "xyz789...",
+  "request_id": "req-001..."
+}
 ```
 
 ### 3. Read a Page
@@ -107,6 +99,19 @@ notion fetch-page abc123def456abc123def456abc123de
 
 # View only the first 30 lines
 notion fetch-page abc123def456abc123def456abc123de --slice 0-30
+```
+
+### 4. Fetch Databases and Data Sources
+
+```bash
+# Fetch a database (formatted JSON)
+notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
+
+# Fetch a data source (formatted JSON)
+notion fetch-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
+
+# Query data source entries (formatted JSON)
+notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab --page-size 20
 ```
 
 **Output** — The page title and URL at the top, followed by its Markdown body, with metadata at the bottom.
@@ -160,7 +165,7 @@ notion configure -p work
 
 ### `notion search [OPTIONS] [QUERY]`
 
-Search pages and databases in your Notion workspace.
+Search pages and databases in your Notion workspace. Output is formatted JSON.
 
 | Option | Default | Description |
 |---|---|---|
@@ -207,13 +212,53 @@ notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 0-20
 notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 50-80
 ```
 
+### `notion fetch-database DATABASE_ID`
+
+Fetch a database object and print formatted JSON.
+
+```bash
+notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
+```
+
+### `notion fetch-data-source DATA_SOURCE_ID`
+
+Fetch a data source object and print formatted JSON.
+
+```bash
+notion fetch-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
+```
+
+### `notion query-data-source DATA_SOURCE_ID [OPTIONS]`
+
+Query a data source and print formatted JSON.
+
+| Option | Default | Description |
+|---|---|---|
+| `-p, --profile PROFILE` | `default` | Config profile to use |
+| `--sorts JSON` | _(none)_ | JSON array for Notion query `sorts` |
+| `--filter JSON` | _(none)_ | JSON object for Notion query `filter` |
+| `--start-cursor UUID` | _(none)_ | Pagination cursor from previous response |
+| `--page-size N` | `10` | Number of results (max 100) |
+| `--in-trash` | `false` | Include trashed entries |
+| `--result-type TYPE` | _(none)_ | Optional Notion `result_type` |
+
+```bash
+# Basic query
+notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
+
+# With filters and sorting
+notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab \
+  --sorts '[{"property":"Due","direction":"ascending"}]' \
+  --filter '{"property":"Done","checkbox":{"equals":false}}'
+```
+
 ---
 
 ## How It Works
 
 - **No cloud upload** — Your secret stays on your machine in `~/.config/notion-cli/config.json`
 - **Direct API calls** — Uses the official [Notion REST API](https://developers.notion.com/) with your integration token
-- **Markdown output** — Converts Notion's internal XML markup to standard Markdown links and strips empty blocks
+- **Output format** — Search/database/data-source commands return JSON; `fetch-page` converts Notion XML tags to Markdown links
 - **PEP 723 metadata** — Inline script header auto-resolves the `httpx` dependency via `uv`
 
 ---
@@ -231,8 +276,8 @@ notion fetch-page <page_id> | llm -m claude "extract todos from this page"
 
 **Scripting & Data Export:**
 ```bash
-# Export all pages matching a query
-notion search --page-size 100 | jq '.[] | .url'
+# Export all result URLs from a query
+notion search --page-size 100 | jq -r '.results[]?.url'
 
 # Get the first 100 lines of a large page
 notion fetch-page <page_id> --slice 0-100 > page_excerpt.md
@@ -241,7 +286,7 @@ notion fetch-page <page_id> --slice 0-100 > page_excerpt.md
 **Integration with Other Tools:**
 ```bash
 # Watch for changes via cron job
-0 * * * * ~/notion search "status updates" > /tmp/updates.md
+0 * * * * ~/notion search "status updates" > /tmp/updates.json
 ```
 
 ---
