@@ -53,6 +53,13 @@ notion configure
 
 You'll be prompted to paste your secret. It's saved to `~/.config/notion-cli/config.json` and never uploaded.
 
+Use `-p/--profile` to configure additional profiles:
+
+```bash
+notion configure -p work
+notion -p work search "meeting notes"
+```
+
 ### 2. Search Your Workspace
 
 ```bash
@@ -135,12 +142,20 @@ request_id: req-002...
 
 Print help and list all available commands.
 
+Global option:
+
+- `-p, --profile PROFILE` — choose config profile (default: `default`)
+
 ### `notion configure`
 
-Set up or reconfigure your Notion integration secret. Prompts for confirmation if a config already exists.
+Set up or reconfigure your Notion integration secret for a profile.
+
+- Default profile: `notion configure`
+- Named profile: `notion configure -p work`
 
 ```bash
 notion configure
+notion configure -p work
 ```
 
 ### `notion search [OPTIONS] [QUERY]`
@@ -149,6 +164,7 @@ Search pages and databases in your Notion workspace.
 
 | Option | Default | Description |
 |---|---|---|
+| `-p, --profile PROFILE` | `default` | Config profile to use |
 | `<query>` | _(none)_ | Search term (optional; empty returns all pages) |
 | `--sort-timestamp FIELD` | `last_edited_time` | Timestamp to sort by (`created_time` or `last_edited_time`) |
 | `--sort-direction {ascending, descending}` | `descending` | Sort direction |
@@ -174,6 +190,7 @@ Retrieve a single Notion page as Markdown.
 
 | Option | Description |
 |---|---|
+| `-p, --profile PROFILE` | Config profile to use (default: `default`) |
 | `<page_id>` | The UUID of the page to fetch (required) |
 | `--slice N-M` | Show only lines N through M (0-indexed, e.g. `0-50`) |
 
@@ -251,7 +268,14 @@ Config is stored in plain JSON at `~/.config/notion-cli/config.json`:
 
 ```json
 {
-  "notion_secret": "secret_xxxxxxxxxxxxxxxxxxxx"
+  "profiles": {
+    "default": {
+      "notion_secret": "secret_xxxxxxxxxxxxxxxxxxxx"
+    },
+    "work": {
+      "notion_secret": "secret_yyyyyyyyyyyyyyyyyyyy"
+    }
+  }
 }
 ```
 
@@ -265,7 +289,7 @@ This tool is read-only. It cannot:
 - Create or edit pages
 - Manage databases or properties
 - Handle block-level operations (create/update/delete blocks)
-- Use OAuth (requires a single Internal Integration token)
+- Use OAuth (requires Internal Integration tokens)
 
 ---
 

@@ -1,15 +1,8 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#   "httpx",
-# ]
-# ///
-
 import argparse
 import json
 import sys
 from pathlib import Path
+import re
 
 import httpx
 
@@ -21,12 +14,39 @@ CONFIG_PATH = Path.home() / ".config" / "notion-cli" / "config.json"
 # Config helpers
 # ---------------------------------------------------------------------------
 
-def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        print("No config found. Run `notion configure` first.", file=sys.stderr)
+def get_selected_profile(raw_profile: str) -> str:
+    profile = raw_profile.strip()
+    if not profile:
+        print("Profile cannot be empty.", file=sys.stderr)
         sys.exit(1)
-    with CONFIG_PATH.open() as f:
-        return json.load(f)
+    return profile
+
+
+def load_config(*, required: bool = True) -> dict:
+    if not CONFIG_PATH.exists():
+        if required:
+            print("No config found. Run 'notion configure' first.", file=sys.stderr)
+            sys.exit(1)
+        return {"profiles": {}}
+
+    try:
+        with CONFIG_PATH.open() as f:
+            config = json.load(f)
+    except json.JSONDecodeError:
+        print(
+            f"Config file is malformed JSON: {CONFIG_PATH}. Please re-run `notion configure`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not isinstance(config, dict) or not isinstance(config.get("profiles"), dict):
+        print(
+            f"Invalid config format in {CONFIG_PATH}. Expected top-level 'profiles' object.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return config
 
 
 def save_config(config: dict) -> None:
@@ -34,6 +54,26 @@ def save_config(config: dict) -> None:
     with CONFIG_PATH.open("w") as f:
         json.dump(config, f, indent=2)
         f.write("\n")
+
+
+def get_profile_secret(config: dict, profile: str) -> str:
+    profile_data = config.get("profiles", {}).get(profile)
+    if not isinstance(profile_data, dict):
+        print(
+            f"Profile '{profile}' not configured. Run: notion configure -p {profile}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    secret = profile_data.get("notion_secret")
+    if not isinstance(secret, str) or not secret.strip():
+        print(
+            f"Profile '{profile}' has no valid notion_secret. Re-run: notion configure -p {profile}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return secret.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -70,9 +110,24 @@ def notion_get(path: str, secret: str) -> dict:
 # Commands
 # ---------------------------------------------------------------------------
 
-def cmd_configure(_args) -> None:
+def cmd_configure(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = {"profiles": {}}
+
     if CONFIG_PATH.exists():
-        answer = input("Config already exists. Reconfigure? [y/N] ").strip().lower()
+        try:
+            with CONFIG_PATH.open() as f:
+                raw = json.load(f)
+            if isinstance(raw, dict) and isinstance(raw.get("profiles"), dict):
+                config = raw
+            else:
+                print("Existing config format is invalid; it will be replaced.", file=sys.stderr)
+        except json.JSONDecodeError:
+            print("Existing config is malformed JSON; it will be replaced.", file=sys.stderr)
+
+    existing_secret = config.get("profiles", {}).get(profile, {}).get("notion_secret")
+    if isinstance(existing_secret, str) and existing_secret.strip():
+        answer = input(f"Profile '{profile}' already exists. Reconfigure? [y/N] ").strip().lower()
         if answer != "y":
             print("Aborted.")
             return
@@ -82,8 +137,9 @@ def cmd_configure(_args) -> None:
         print("Secret cannot be empty.", file=sys.stderr)
         sys.exit(1)
 
-    save_config({"notion_secret": secret})
-    print(f"Config saved to {CONFIG_PATH}")
+    config.setdefault("profiles", {})[profile] = {"notion_secret": secret}
+    save_config(config)
+    print(f"Config saved to {CONFIG_PATH} (profile: {profile})")
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +212,7 @@ def format_search_output(data: dict) -> str:
     # Metadata block
     meta_lines = []
     if data.get("has_more"):
-        meta_lines.append(f"has_more: true")
+        meta_lines.append("has_more: true")
     next_cursor = data.get("next_cursor")
     if next_cursor:
         meta_lines.append(f"next_cursor: {next_cursor}")
@@ -170,16 +226,14 @@ def format_search_output(data: dict) -> str:
     return body
 
 
-import re as _re
-
 def convert_notion_markdown(raw: str) -> str:
     """Convert Notion-flavoured XML tags in the markdown string to standard Markdown."""
     # <page url="URL">Title</page>  →  [Title](URL)
-    raw = _re.sub(r'<page url="([^"]+)">([^<]*)</page>', r'[\2](\1)', raw)
+    raw = re.sub(r'<page url="([^"]+)">([^<]*)</page>', r'[\2](\1)', raw)
     # strip <empty-block/>
-    raw = _re.sub(r'<empty-block\s*/>', '', raw)
+    raw = re.sub(r'<empty-block\s*/>', '', raw)
     # clean up excess blank lines left by stripped tags
-    raw = _re.sub(r'\n{3,}', '\n\n', raw)
+    raw = re.sub(r'\n{3,}', '\n\n', raw)
     return raw.strip()
 
 
@@ -220,8 +274,9 @@ def format_fetch_output(data: dict, page_meta: dict, slice_range: tuple[int, int
 # ---------------------------------------------------------------------------
 
 def cmd_search(args) -> None:
+    profile = get_selected_profile(args.profile)
     config = load_config()
-    secret = config["notion_secret"]
+    secret = get_profile_secret(config, profile)
 
     body: dict = {}
 
@@ -259,8 +314,9 @@ def parse_slice(value: str) -> tuple[int, int]:
 
 
 def cmd_fetch_page(args) -> None:
+    profile = get_selected_profile(args.profile)
     config = load_config()
-    secret = config["notion_secret"]
+    secret = get_profile_secret(config, profile)
 
     # Fetch page metadata and markdown content
     page_meta = notion_get(f"/v1/pages/{args.page_id}", secret)
@@ -274,11 +330,22 @@ def cmd_fetch_page(args) -> None:
 # Argument parser
 # ---------------------------------------------------------------------------
 
+def add_profile_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-p",
+        "--profile",
+        default="default",
+        metavar="PROFILE",
+        help="Config profile to use (default: default).",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notion",
         description="Lightweight Notion CLI for searching and reading pages.",
     )
+    add_profile_argument(parser)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     # configure
@@ -347,9 +414,38 @@ def build_parser() -> argparse.ArgumentParser:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def normalize_profile_args(argv: list[str]) -> list[str]:
+    """Allow -p/--profile before or after subcommand by normalizing argv."""
+    normalized: list[str] = []
+    profile_value: str | None = None
+
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "-p" or token == "--profile":
+            if i + 1 >= len(argv):
+                normalized.append(token)
+                i += 1
+                continue
+            profile_value = argv[i + 1]
+            i += 2
+            continue
+        if token.startswith("--profile="):
+            profile_value = token.split("=", 1)[1]
+            i += 1
+            continue
+
+        normalized.append(token)
+        i += 1
+
+    if profile_value is not None:
+        return ["--profile", profile_value, *normalized]
+    return normalized
+
+
 def main() -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(normalize_profile_args(sys.argv[1:]))
 
     if args.command == "configure":
         cmd_configure(args)
