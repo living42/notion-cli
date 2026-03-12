@@ -1,9 +1,9 @@
 # notion-cli
 
-A lightweight, zero-setup command-line tool to search and read your Notion workspace. Perfect for scripting, LLM integrations, and automation.
+A lightweight, zero-setup command-line tool to search and read your Notion workspace. Ideal for scripts, LLM workflows, and automation.
 
 ```bash
-# Search your Notion workspace (formatted JSON)
+# Search your Notion workspace (pretty-printed JSON)
 notion search "project roadmap"
 
 # Read a page as Markdown
@@ -15,8 +15,8 @@ notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
 ## Features
 
 - **One-liner installation** — No `pip install`, no virtual environments. Just run it.
-- **Formatted JSON output** — `search`, `fetch-database`, `fetch-data-source`, and `query-data-source` return pretty JSON.
-- **Markdown page rendering** — `fetch-page` converts Notion XML tags to readable Markdown links.
+- **Pretty-printed JSON output** — `search`, `fetch-database`, `fetch-data-source`, and `query-data-source` return pretty-printed JSON.
+- **Markdown page output** — `fetch-page` converts Notion XML tags to readable Markdown links.
 - **Pagination support** — Walk through large result sets with cursors.
 - **Slice large pages** — View only the lines you need with `fetch-page --slice`.
 - **Multi-profile config** — Use different Notion tokens with `-p/--profile`.
@@ -73,7 +73,7 @@ notion search --page-size 5 "meeting notes"
 notion search --start-cursor 2afd4d83-8b76-807e-a556-cae88e10b8a8 "meeting notes"
 ```
 
-**Output** — Formatted JSON from Notion's search endpoint.
+**Output** — Pretty-printed JSON from Notion's search endpoint.
 
 ```json
 {
@@ -95,26 +95,14 @@ notion search --start-cursor 2afd4d83-8b76-807e-a556-cae88e10b8a8 "meeting notes
 
 ```bash
 # Fetch a full page
-notion fetch-page abc123def456abc123def456abc123de
+notion fetch-page <page_id>
 
 # View only the first 30 lines
-notion fetch-page abc123def456abc123def456abc123de --slice 0-30
+notion fetch-page <page_id> --slice 0-30
 ```
 
-### 4. Fetch Databases and Data Sources
 
-```bash
-# Fetch a database (formatted JSON)
-notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
-
-# Fetch a data source (formatted JSON)
-notion fetch-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
-
-# Query data source entries (formatted JSON)
-notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab --page-size 20
-```
-
-**Output** — The page title and URL at the top, followed by its Markdown body, with metadata at the bottom.
+**Output** — The page title and URL appear at the top, followed by the Markdown body and a metadata block.
 
 ```markdown
 # 📋 Engineering Roadmap
@@ -165,7 +153,7 @@ notion configure -p work
 
 ### `notion search [OPTIONS] [QUERY]`
 
-Search pages and databases in your Notion workspace. Output is formatted JSON.
+Search pages and databases in your Notion workspace. Output is pretty-printed JSON.
 
 | Option | Default | Description |
 |---|---|---|
@@ -214,7 +202,7 @@ notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 50-80
 
 ### `notion fetch-database DATABASE_ID`
 
-Fetch a database object and print formatted JSON.
+Fetch a database object and print pretty-printed JSON.
 
 ```bash
 notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
@@ -222,7 +210,7 @@ notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
 
 ### `notion fetch-data-source DATA_SOURCE_ID`
 
-Fetch a data source object and print formatted JSON.
+Fetch a data source object and print pretty-printed JSON.
 
 ```bash
 notion fetch-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
@@ -230,7 +218,7 @@ notion fetch-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
 
 ### `notion query-data-source DATA_SOURCE_ID [OPTIONS]`
 
-Query a data source and print formatted JSON.
+Query a data source and print pretty-printed JSON.
 
 | Option | Default | Description |
 |---|---|---|
@@ -251,90 +239,6 @@ notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab \
   --sorts '[{"property":"Due","direction":"ascending"}]' \
   --filter '{"property":"Done","checkbox":{"equals":false}}'
 ```
-
----
-
-## How It Works
-
-- **No cloud upload** — Your secret stays on your machine in `~/.config/notion-cli/config.json`
-- **Direct API calls** — Uses the official [Notion REST API](https://developers.notion.com/) with your integration token
-- **Output format** — Search/database/data-source commands return JSON; `fetch-page` converts Notion XML tags to Markdown links
-- **PEP 723 metadata** — Inline script header auto-resolves the `httpx` dependency via `uv`
-
----
-
-## Use Cases
-
-**LLM Agents & Automation:**
-```bash
-# Fetch and pipe into an LLM
-notion search "bugs" | llm -m gpt-4 "summarize these Notion search results"
-
-# Read a page and analyze it
-notion fetch-page <page_id> | llm -m claude "extract todos from this page"
-```
-
-**Scripting & Data Export:**
-```bash
-# Export all result URLs from a query
-notion search --page-size 100 | jq -r '.results[]?.url'
-
-# Get the first 100 lines of a large page
-notion fetch-page <page_id> --slice 0-100 > page_excerpt.md
-```
-
-**Integration with Other Tools:**
-```bash
-# Watch for changes via cron job
-0 * * * * ~/notion search "status updates" > /tmp/updates.json
-```
-
----
-
-## Troubleshooting
-
-**"No config found"**
-Run `notion configure` to set up your integration secret.
-
-**"Error 401: Unauthorized"**
-Your secret is invalid or expired. Run `notion configure` again.
-
-**"Error 404: Not found"**
-The page UUID doesn't exist or your integration doesn't have access to it. Check the ID and page permissions in Notion.
-
-**"uv: command not found"**
-Install `uv` from [docs.astral.sh/uv](https://docs.astral.sh/uv/).
-
----
-
-## Advanced: Config File
-
-Config is stored in plain JSON at `~/.config/notion-cli/config.json`:
-
-```json
-{
-  "profiles": {
-    "default": {
-      "notion_secret": "secret_xxxxxxxxxxxxxxxxxxxx"
-    },
-    "work": {
-      "notion_secret": "secret_yyyyyyyyyyyyyyyyyyyy"
-    }
-  }
-}
-```
-
-You can edit it directly if needed, but `notion configure` is safer.
-
----
-
-## Limitations
-
-This tool is read-only. It cannot:
-- Create or edit pages
-- Manage databases or properties
-- Handle block-level operations (create/update/delete blocks)
-- Use OAuth (requires Internal Integration tokens)
 
 ---
 
