@@ -1,0 +1,5 @@
+- create-page command
+  - with parent page id
+    - no workspace, database id, datasource id support currently
+  - and markdown content
+- MUST READ api reference: https://developers.notion.com/reference/post-page.md (fetch using curl)

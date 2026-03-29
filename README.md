@@ -1,6 +1,6 @@
 # notion-cli
 
-A lightweight, zero-setup command-line tool to search, read, and update your Notion pages. Perfect for scripting, LLM integrations, and automation.
+A lightweight, zero-setup command-line tool to search, read, create, and update your Notion pages. Perfect for scripting, LLM integrations, and automation.
 
 ```bash
 # Search your Notion workspace
@@ -8,6 +8,9 @@ notion search "project roadmap"
 
 # Read a page as clean Markdown
 notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
+
+# Create a child page from Markdown
+notion create-page "Release Notes" --parent-page-id 3c90c3cc-0d44-4b50-8888-8dd25736052a --content-file ./release-notes.md
 
 # Update page content
 notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --old "Draft" --new "Published"
@@ -20,6 +23,7 @@ notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --old "Draft" --new "Pub
 - **One-liner installation** — No `pip install`, no virtual environments. Just run it.
 - **Clean Markdown output** — Notion XML is auto-converted to readable Markdown links
 - **Human & machine-friendly** — Output is both easy to read and easy to parse
+- **Page creation** — Create child pages from inline Markdown, files, or stdin
 - **Page content updates** — Search-and-replace or fully replace page markdown
 - **Pagination support** — Walk through large result sets with cursors
 - **Slice large pages** — View only the lines you need with `--slice`
@@ -131,7 +135,37 @@ request_id: req-002...
 -->
 ```
 
-### 4. Update a Page
+### 4. Create a Page
+
+```bash
+# Create a blank child page
+notion create-page "Scratchpad" --parent-page-id abc123def456abc123def456abc123de
+
+# Create a page from a file
+notion create-page "Release Notes" --parent-page-id abc123def456abc123def456abc123de --content-file ./release-notes.md
+```
+
+**Output** — A compact success summary with page info and creation metadata.
+
+```markdown
+# ✅ Created Page
+- **Title:** Release Notes
+- **URL:** https://www.notion.so/Release-Notes-abc123...
+- **Page ID:** abc123...
+- **Parent:** page `abc123def456abc123def456abc123de`
+- **Created:** 2026-03-29T10:15:00.000Z
+- **Last edited:** 2026-03-29T10:15:00.000Z
+
+---
+
+<!-- metadata
+page_id: abc123...
+parent: page_id:abc123def456abc123def456abc123de
+request_id: req-003...
+-->
+```
+
+### 5. Update a Page
 
 ```bash
 # Replace one string with another
@@ -225,6 +259,35 @@ notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 0-20
 notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 50-80
 ```
 
+### `notion create-page TITLE --parent-page-id UUID [OPTIONS]`
+
+Create a new child page under an existing Notion page.
+
+| Option | Description |
+|---|---|
+| `TITLE` | Title of the new page |
+| `--parent-page-id UUID` | Parent page ID for the new child page |
+| `--content TEXT` | Inline Markdown body |
+| `--content-file PATH` | Read Markdown body from a file |
+
+If neither `--content` nor `--content-file` is provided, content is read from `stdin` when piped; otherwise a blank page is created.
+
+**Examples:**
+
+```bash
+# Create a blank child page
+notion create-page "Scratchpad" --parent-page-id 3c90c3cc-0d44-4b50-8888-8dd25736052a
+
+# Create a page from inline Markdown
+notion create-page "Draft" --parent-page-id 3c90c3cc-0d44-4b50-8888-8dd25736052a --content "# Draft\n\nHello"
+
+# Create a page from a file
+notion create-page "Release Notes" --parent-page-id 3c90c3cc-0d44-4b50-8888-8dd25736052a --content-file ./release-notes.md
+
+# Create a page from stdin
+cat ./release-notes.md | notion create-page "Release Notes" --parent-page-id 3c90c3cc-0d44-4b50-8888-8dd25736052a
+```
+
 ### `notion update-page PAGE_ID [OPTIONS]`
 
 Update a page's Markdown content.
@@ -289,6 +352,9 @@ notion search "bugs" | llm -m gpt-4 "summarize these Notion search results"
 # Read a page and analyze it
 notion fetch-page <page_id> | llm -m claude "extract todos from this page"
 
+# Create a page from generated Markdown
+notion create-page "Weekly Summary" --parent-page-id <page_id> --content-file ./summary.md
+
 # Update a page after generating revised text
 notion update-page <page_id> --replace --content-file ./rewritten-page.md
 ```
@@ -319,7 +385,7 @@ Run `notion configure` to set up your integration secret.
 Your secret is invalid or expired. Run `notion configure` again.
 
 **"Error 403: restricted_resource"**
-Your integration does not have Notion's **update content** capability for the target page. Enable it in the integration settings.
+Your integration does not have the required Notion capability for the target operation. Use **Insert Content** for `create-page` and **Update Content** for `update-page`, then enable the needed capability in the integration settings.
 
 **"Error 404: Not found"**
 The page UUID doesn't exist or your integration doesn't have access to it. Check the ID and page permissions in Notion.
@@ -345,9 +411,10 @@ You can edit it directly if needed, but `notion configure` is safer.
 
 ## Limitations
 
-This tool supports searching, reading, and Markdown page-content updates. It cannot:
-- Create new pages
-- Manage databases or page properties
+This tool supports searching, reading, creating child pages, and Markdown page-content updates. It cannot:
+- Create workspace-level pages
+- Create pages under databases or data sources
+- Manage databases or arbitrary page properties
 - Handle general block-level operations (create/update/delete blocks outside the page-markdown endpoint)
 - Use OAuth (requires a single Internal Integration token)
 

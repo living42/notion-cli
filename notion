@@ -252,6 +252,38 @@ def format_update_page_output(update_data: dict, page_meta: dict, mode: str) -> 
     return "\n".join(lines) + "\n\n---\n\n" + meta
 
 
+def format_create_page_output(page_data: dict) -> str:
+    title = extract_title(page_data)
+    url = page_data.get("url", "")
+    page_id = page_data.get("id", "")
+    parent = format_parent(page_data.get("parent", {}))
+    created = page_data.get("created_time", "")
+    edited = page_data.get("last_edited_time", "")
+
+    lines = [
+        "# ✅ Created Page",
+        f"- **Title:** {title}",
+        f"- **URL:** {url}",
+        f"- **Page ID:** {page_id}",
+        f"- **Parent:** {parent}",
+    ]
+    if created:
+        lines.append(f"- **Created:** {created}")
+    if edited:
+        lines.append(f"- **Last edited:** {edited}")
+
+    meta_lines = [
+        f"page_id: {page_id}",
+        f"parent: {page_data.get('parent', {}).get('type', 'unknown')}:{page_data.get('parent', {}).get('page_id', '')}" if page_data.get("parent", {}).get("type") == "page_id" else f"parent: {page_data.get('parent', {}).get('type', 'unknown')}",
+    ]
+    request_id = page_data.get("request_id", "")
+    if request_id:
+        meta_lines.append(f"request_id: {request_id}")
+
+    meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
+    return "\n".join(lines) + "\n\n---\n\n" + meta
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing helpers
 # ---------------------------------------------------------------------------
@@ -291,6 +323,65 @@ def read_replace_content(args) -> str:
     if content == "":
         fail("Replace mode requires --content, --content-file, or piped stdin.")
     return content
+
+
+def read_create_content(args) -> str | None:
+    if args.content is not None and args.content_file is not None:
+        fail("Use only one of --content or --content-file.")
+
+    if args.content is not None:
+        return args.content
+
+    if args.content_file is not None:
+        path = Path(args.content_file)
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as e:
+            fail(f"Unable to read --content-file {path}: {e}")
+
+    if sys.stdin.isatty():
+        return None
+
+    content = sys.stdin.read()
+    if content == "":
+        return None
+    return content
+
+
+def build_create_page_parent(args) -> dict:
+    if not args.parent_page_id:
+        fail("create-page requires --parent-page-id.")
+    return {
+        "type": "page_id",
+        "page_id": args.parent_page_id,
+    }
+
+
+def build_create_page_body(args) -> dict:
+    title = args.title.strip()
+    if not title:
+        fail("Title cannot be empty.")
+
+    body: dict = {
+        "parent": build_create_page_parent(args),
+        "properties": {
+            "title": {
+                "title": [
+                    {
+                        "text": {
+                            "content": title,
+                        }
+                    }
+                ]
+            }
+        },
+    }
+
+    content = read_create_content(args)
+    if content is not None:
+        body["markdown"] = content
+
+    return body
 
 
 def build_update_page_body(args) -> tuple[str, dict]:
@@ -388,6 +479,14 @@ def cmd_update_page(args) -> None:
     print(format_update_page_output(update_data, page_meta, mode))
 
 
+def cmd_create_page(args) -> None:
+    config = load_config()
+    secret = config["notion_secret"]
+
+    page_data = notion_post("/v1/pages", secret, build_create_page_body(args))
+    print(format_create_page_output(page_data))
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -395,7 +494,7 @@ def cmd_update_page(args) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notion",
-        description="Lightweight Notion CLI for searching, reading, and updating pages.",
+        description="Lightweight Notion CLI for searching, reading, creating, and updating pages.",
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -453,6 +552,32 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N-M",
         help="Output only lines N through M of the page body (0-indexed, e.g. --slice 0-20).",
+    )
+
+    create_p = sub.add_parser(
+        "create-page",
+        help="Create a new Notion page under an existing page.",
+    )
+    create_p.add_argument(
+        "title",
+        help="The title of the new Notion page.",
+    )
+    create_p.add_argument(
+        "--parent-page-id",
+        default=None,
+        metavar="UUID",
+        help="Create the new page under an existing page.",
+    )
+    create_p.add_argument(
+        "--content",
+        default=None,
+        help="Markdown body for the new page.",
+    )
+    create_p.add_argument(
+        "--content-file",
+        default=None,
+        metavar="PATH",
+        help="Read Markdown body for the new page from a file.",
     )
 
     update_p = sub.add_parser(
@@ -521,6 +646,8 @@ def main() -> None:
         cmd_search(args)
     elif args.command == "fetch-page":
         cmd_fetch_page(args)
+    elif args.command == "create-page":
+        cmd_create_page(args)
     elif args.command == "update-page":
         cmd_update_page(args)
     else:
