@@ -8,6 +8,7 @@
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -15,22 +16,58 @@ import httpx
 
 NOTION_VERSION = "2025-09-03"
 CONFIG_PATH = Path.home() / ".config" / "notion-cli" / "config.json"
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
 
-def fail(message: str) -> "Never":
+def fail(message: str) -> None:
     print(message, file=sys.stderr)
     sys.exit(1)
 
 
-def load_config() -> dict:
+def get_selected_profile(raw_profile: str) -> str:
+    profile = raw_profile.strip()
+    if not profile:
+        fail("Profile cannot be empty.")
+    return profile
+
+
+def load_config(*, required: bool = True) -> dict:
     if not CONFIG_PATH.exists():
-        fail("No config found. Run `notion configure` first.")
-    with CONFIG_PATH.open() as f:
-        return json.load(f)
+        if required:
+            fail("No config found. Run `notion configure` first.")
+        return {"profiles": {}}
+
+    try:
+        with CONFIG_PATH.open() as f:
+            config = json.load(f)
+    except json.JSONDecodeError:
+        fail(f"Config file is malformed JSON: {CONFIG_PATH}. Please re-run `notion configure`.")
+
+    if not isinstance(config, dict):
+        fail(f"Invalid config format in {CONFIG_PATH}. Expected a JSON object.")
+
+    profiles = config.get("profiles")
+    if isinstance(profiles, dict):
+        return config
+
+    # Backward compatibility with the legacy single-profile format:
+    # {"notion_secret": "secret_xxx"}
+    legacy_secret = config.get("notion_secret")
+    if isinstance(legacy_secret, str) and legacy_secret.strip():
+        return {
+            "profiles": {
+                "default": {
+                    "notion_secret": legacy_secret.strip(),
+                }
+            }
+        }
+
+    fail(f"Invalid config format in {CONFIG_PATH}. Expected top-level 'profiles' object.")
 
 
 def save_config(config: dict) -> None:
@@ -38,6 +75,55 @@ def save_config(config: dict) -> None:
     with CONFIG_PATH.open("w") as f:
         json.dump(config, f, indent=2)
         f.write("\n")
+
+
+def get_profile_secret(config: dict, profile: str) -> str:
+    profile_data = config.get("profiles", {}).get(profile)
+    if not isinstance(profile_data, dict):
+        fail(f"Profile '{profile}' not configured. Run: notion configure -p {profile}")
+
+    secret = profile_data.get("notion_secret")
+    if not isinstance(secret, str) or not secret.strip():
+        fail(f"Profile '{profile}' has no valid notion_secret. Re-run: notion configure -p {profile}")
+
+    return secret.strip()
+
+
+# ---------------------------------------------------------------------------
+# Validation + parsing helpers
+# ---------------------------------------------------------------------------
+
+def normalize_notion_id(raw_id: str, object_label: str) -> str:
+    value = raw_id.strip()
+    if UUID_RE.fullmatch(value):
+        return value.lower()
+
+    if HEX32_RE.fullmatch(value):
+        value = value.lower()
+        return f"{value[0:8]}-{value[8:12]}-{value[12:16]}-{value[16:20]}-{value[20:32]}"
+
+    fail(f"Invalid {object_label} ID: {raw_id}")
+
+
+def parse_json_option(raw: str, expected_type: type, flag: str):
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        fail(f"Invalid JSON for {flag}: {e}")
+
+    if not isinstance(parsed, expected_type):
+        expected = "array" if expected_type is list else "object"
+        fail(f"Invalid {flag}: expected JSON {expected}.")
+
+    return parsed
+
+
+def validate_page_size(page_size: int | None) -> int | None:
+    if page_size is None:
+        return None
+    if page_size < 1 or page_size > 100:
+        fail("--page-size must be between 1 and 100.")
+    return page_size
 
 
 # ---------------------------------------------------------------------------
@@ -80,9 +166,13 @@ def notion_patch(path: str, secret: str, body: dict) -> dict:
 # Commands
 # ---------------------------------------------------------------------------
 
-def cmd_configure(_args) -> None:
-    if CONFIG_PATH.exists():
-        answer = input("Config already exists. Reconfigure? [y/N] ").strip().lower()
+def cmd_configure(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = load_config(required=False)
+
+    existing_secret = config.get("profiles", {}).get(profile, {}).get("notion_secret")
+    if isinstance(existing_secret, str) and existing_secret.strip():
+        answer = input(f"Profile '{profile}' already exists. Reconfigure? [y/N] ").strip().lower()
         if answer != "y":
             print("Aborted.")
             return
@@ -91,8 +181,9 @@ def cmd_configure(_args) -> None:
     if not secret:
         fail("Secret cannot be empty.")
 
-    save_config({"notion_secret": secret})
-    print(f"Config saved to {CONFIG_PATH}")
+    config.setdefault("profiles", {})[profile] = {"notion_secret": secret}
+    save_config(config)
+    print(f"Config saved to {CONFIG_PATH} (profile: {profile})")
 
 
 # ---------------------------------------------------------------------------
@@ -100,22 +191,30 @@ def cmd_configure(_args) -> None:
 # ---------------------------------------------------------------------------
 
 def extract_title(page: dict) -> str:
-    """Extract plain-text title from a page or database result."""
+    """Extract plain-text title from a page, database, or data source result."""
     props = page.get("properties", {})
-    # Pages store title under a property of type "title"
-    for prop in props.values():
-        if prop.get("type") == "title":
-            parts = prop.get("title", [])
-            return "".join(p.get("plain_text", "") for p in parts)
-    # Databases expose title at top level
+    if isinstance(props, dict):
+        for prop in props.values():
+            if isinstance(prop, dict) and prop.get("type") == "title":
+                parts = prop.get("title", [])
+                title = "".join(p.get("plain_text", "") for p in parts if isinstance(p, dict)).strip()
+                if title:
+                    return title
+
     title_list = page.get("title", [])
-    if title_list:
-        return "".join(p.get("plain_text", "") for p in title_list)
+    if isinstance(title_list, list) and title_list:
+        title = "".join(p.get("plain_text", "") for p in title_list if isinstance(p, dict)).strip()
+        if title:
+            return title
+
+    name = page.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+
     return "(untitled)"
 
 
 def extract_icon(page: dict) -> str:
-    """Return emoji icon prefix (with trailing space) or empty string."""
     icon = page.get("icon")
     if icon and icon.get("type") == "emoji":
         return icon["emoji"] + " "
@@ -132,7 +231,17 @@ def format_parent(parent: dict) -> str:
         return f"page `{parent['page_id']}`"
     if ptype == "database_id":
         return f"database `{parent['database_id']}`"
+    if ptype == "data_source_id":
+        return f"data_source `{parent['data_source_id']}`"
     return ptype
+
+
+def render_metadata_block(meta_lines: list[str]) -> str:
+    return "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
+
+
+def print_pretty_json(data: dict) -> None:
+    print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def format_search_result(page: dict) -> str:
@@ -147,9 +256,10 @@ def format_search_result(page: dict) -> str:
     lines = [
         f"## {icon}{title}",
         f"- **Type:** {obj_type}",
-        f"- **URL:** {url}",
-        f"- **Parent:** {parent}",
     ]
+    if url:
+        lines.append(f"- **URL:** {url}")
+    lines.append(f"- **Parent:** {parent}")
     if created:
         lines.append(f"- **Created:** {created}")
     if edited:
@@ -160,10 +270,10 @@ def format_search_result(page: dict) -> str:
 def format_search_output(data: dict) -> str:
     results = data.get("results", [])
     sections = [format_search_result(r) for r in results]
-    body = "\n\n".join(sections)
+    body = "\n\n".join(sections) if sections else "_No results._"
 
     meta_lines = []
-    if data.get("has_more"):
+    if data.get("has_more") is True:
         meta_lines.append("has_more: true")
     next_cursor = data.get("next_cursor")
     if next_cursor:
@@ -173,27 +283,18 @@ def format_search_output(data: dict) -> str:
         meta_lines.append(f"request_id: {request_id}")
 
     if meta_lines:
-        meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
-        return body + "\n\n---\n\n" + meta
+        return body + "\n\n---\n\n" + render_metadata_block(meta_lines)
     return body
 
 
-import re as _re
-
-
 def convert_notion_markdown(raw: str) -> str:
-    """Convert Notion-flavoured XML tags in the markdown string to standard Markdown."""
-    raw = _re.sub(r'<page url="([^"]+)">([^<]*)</page>', r'[\2](\1)', raw)
-    raw = _re.sub(r'<empty-block\s*/>', '', raw)
-    raw = _re.sub(r'\n{3,}', '\n\n', raw)
+    raw = re.sub(r'<page url="([^"]+)">([^<]*)</page>', r'[\2](\1)', raw)
+    raw = re.sub(r'<empty-block\s*/>', '', raw)
+    raw = re.sub(r'\n{3,}', '\n\n', raw)
     return raw.strip()
 
 
-def format_fetch_output(
-    data: dict,
-    page_meta: dict,
-    slice_range: tuple[int, int] | None = None,
-) -> str:
+def format_fetch_output(data: dict, page_meta: dict, slice_range: tuple[int, int] | None = None) -> str:
     icon = extract_icon(page_meta)
     title = extract_title(page_meta)
     url = page_meta.get("url", "")
@@ -219,8 +320,8 @@ def format_fetch_output(
     ]
     if slice_range is not None:
         meta_lines.append(f"slice: {slice_range[0]}-{slice_range[1]}")
-    meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
-    return header + "\n\n" + body + "\n\n---\n\n" + meta
+
+    return header + "\n\n" + body + "\n\n---\n\n" + render_metadata_block(meta_lines)
 
 
 def format_update_page_output(update_data: dict, page_meta: dict, mode: str) -> str:
@@ -248,8 +349,7 @@ def format_update_page_output(update_data: dict, page_meta: dict, mode: str) -> 
     if request_id:
         meta_lines.append(f"request_id: {request_id}")
 
-    meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
-    return "\n".join(lines) + "\n\n---\n\n" + meta
+    return "\n".join(lines) + "\n\n---\n\n" + render_metadata_block(meta_lines)
 
 
 def format_create_page_output(page_data: dict) -> str:
@@ -272,16 +372,21 @@ def format_create_page_output(page_data: dict) -> str:
     if edited:
         lines.append(f"- **Last edited:** {edited}")
 
+    parent_data = page_data.get("parent", {})
+    if parent_data.get("type") == "page_id":
+        parent_meta = f"parent: page_id:{parent_data.get('page_id', '')}"
+    else:
+        parent_meta = f"parent: {parent_data.get('type', 'unknown')}"
+
     meta_lines = [
         f"page_id: {page_id}",
-        f"parent: {page_data.get('parent', {}).get('type', 'unknown')}:{page_data.get('parent', {}).get('page_id', '')}" if page_data.get("parent", {}).get("type") == "page_id" else f"parent: {page_data.get('parent', {}).get('type', 'unknown')}",
+        parent_meta,
     ]
     request_id = page_data.get("request_id", "")
     if request_id:
         meta_lines.append(f"request_id: {request_id}")
 
-    meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
-    return "\n".join(lines) + "\n\n---\n\n" + meta
+    return "\n".join(lines) + "\n\n---\n\n" + render_metadata_block(meta_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +394,6 @@ def format_create_page_output(page_data: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def parse_slice(value: str) -> tuple[int, int]:
-    """Parse 'n-m' into (n, m). Raises argparse-friendly ValueError on bad input."""
     parts = value.split("-")
     if len(parts) != 2:
         raise argparse.ArgumentTypeError(f"--slice must be in the form N-M, got: {value!r}")
@@ -353,7 +457,7 @@ def build_create_page_parent(args) -> dict:
         fail("create-page requires --parent-page-id.")
     return {
         "type": "page_id",
-        "page_id": args.parent_page_id,
+        "page_id": normalize_notion_id(args.parent_page_id, "page"),
     }
 
 
@@ -434,8 +538,9 @@ def build_update_page_body(args) -> tuple[str, dict]:
 # ---------------------------------------------------------------------------
 
 def cmd_search(args) -> None:
+    profile = get_selected_profile(args.profile)
     config = load_config()
-    secret = config["notion_secret"]
+    secret = get_profile_secret(config, profile)
 
     body: dict = {}
 
@@ -451,37 +556,94 @@ def cmd_search(args) -> None:
     if args.start_cursor:
         body["start_cursor"] = args.start_cursor
 
-    if args.page_size is not None:
-        body["page_size"] = args.page_size
+    page_size = validate_page_size(args.page_size)
+    if page_size is not None:
+        body["page_size"] = page_size
 
     result = notion_post("/v1/search", secret, body)
     print(format_search_output(result))
 
 
 def cmd_fetch_page(args) -> None:
+    profile = get_selected_profile(args.profile)
     config = load_config()
-    secret = config["notion_secret"]
+    secret = get_profile_secret(config, profile)
 
-    page_meta = notion_get(f"/v1/pages/{args.page_id}", secret)
-    data = notion_get(f"/v1/pages/{args.page_id}/markdown", secret)
+    page_id = normalize_notion_id(args.page_id, "page")
+    page_meta = notion_get(f"/v1/pages/{page_id}", secret)
+    data = notion_get(f"/v1/pages/{page_id}/markdown", secret)
 
     slice_range = parse_slice(args.slice) if args.slice else None
     print(format_fetch_output(data, page_meta, slice_range))
 
 
-def cmd_update_page(args) -> None:
+def cmd_fetch_database(args) -> None:
+    profile = get_selected_profile(args.profile)
     config = load_config()
-    secret = config["notion_secret"]
+    secret = get_profile_secret(config, profile)
 
+    database_id = normalize_notion_id(args.database_id, "database")
+    data = notion_get(f"/v1/databases/{database_id}", secret)
+    print_pretty_json(data)
+
+
+def cmd_fetch_data_source(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = load_config()
+    secret = get_profile_secret(config, profile)
+
+    data_source_id = normalize_notion_id(args.data_source_id, "data source")
+    data = notion_get(f"/v1/data_sources/{data_source_id}", secret)
+    print_pretty_json(data)
+
+
+def cmd_query_data_source(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = load_config()
+    secret = get_profile_secret(config, profile)
+
+    data_source_id = normalize_notion_id(args.data_source_id, "data source")
+    payload: dict = {}
+
+    if args.sorts is not None:
+        payload["sorts"] = parse_json_option(args.sorts, list, "--sorts")
+
+    if args.filter is not None:
+        payload["filter"] = parse_json_option(args.filter, dict, "--filter")
+
+    if args.start_cursor:
+        payload["start_cursor"] = args.start_cursor
+
+    page_size = validate_page_size(args.page_size)
+    if page_size is not None:
+        payload["page_size"] = page_size
+
+    if args.in_trash:
+        payload["in_trash"] = True
+
+    if args.result_type:
+        payload["result_type"] = args.result_type
+
+    resp = notion_post(f"/v1/data_sources/{data_source_id}/query", secret, payload)
+    print_pretty_json(resp)
+
+
+def cmd_update_page(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = load_config()
+    secret = get_profile_secret(config, profile)
+
+    page_id = normalize_notion_id(args.page_id, "page")
     mode, body = build_update_page_body(args)
-    update_data = notion_patch(f"/v1/pages/{args.page_id}/markdown", secret, body)
-    page_meta = notion_get(f"/v1/pages/{args.page_id}", secret)
+    update_data = notion_patch(f"/v1/pages/{page_id}/markdown", secret, body)
+    page_meta = notion_get(f"/v1/pages/{page_id}", secret)
     print(format_update_page_output(update_data, page_meta, mode))
 
 
 def cmd_create_page(args) -> None:
+    profile = get_selected_profile(args.profile)
     config = load_config()
-    secret = config["notion_secret"]
+    secret = get_profile_secret(config, profile)
 
     page_data = notion_post("/v1/pages", secret, build_create_page_body(args))
     print(format_create_page_output(page_data))
@@ -491,11 +653,22 @@ def cmd_create_page(args) -> None:
 # Argument parser
 # ---------------------------------------------------------------------------
 
+def add_profile_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-p",
+        "--profile",
+        default="default",
+        metavar="PROFILE",
+        help="Config profile to use (default: default).",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notion",
-        description="Lightweight Notion CLI for searching, reading, creating, and updating pages.",
+        description="Lightweight Notion CLI for searching, reading, creating, and updating pages, databases, and data sources.",
     )
+    add_profile_argument(parser)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     sub.add_parser(
@@ -505,7 +678,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     search_p = sub.add_parser(
         "search",
-        help="Search Notion pages and databases.",
+        help="Search Notion pages, databases, and data sources.",
     )
     search_p.add_argument(
         "query",
@@ -552,6 +725,69 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N-M",
         help="Output only lines N through M of the page body (0-indexed, e.g. --slice 0-20).",
+    )
+
+    fetch_db_p = sub.add_parser(
+        "fetch-database",
+        help="Fetch a Notion database and print formatted JSON.",
+    )
+    fetch_db_p.add_argument(
+        "database_id",
+        help="The UUID of the Notion database to fetch.",
+    )
+
+    fetch_ds_p = sub.add_parser(
+        "fetch-data-source",
+        help="Fetch a Notion data source and print formatted JSON.",
+    )
+    fetch_ds_p.add_argument(
+        "data_source_id",
+        help="The UUID of the Notion data source to fetch.",
+    )
+
+    query_ds_p = sub.add_parser(
+        "query-data-source",
+        help="Query a Notion data source and print formatted JSON.",
+    )
+    query_ds_p.add_argument(
+        "data_source_id",
+        help="The UUID of the Notion data source to query.",
+    )
+    query_ds_p.add_argument(
+        "--sorts",
+        default=None,
+        metavar="JSON",
+        help="JSON array for Notion query sorts.",
+    )
+    query_ds_p.add_argument(
+        "--filter",
+        default=None,
+        metavar="JSON",
+        help="JSON object for Notion query filter.",
+    )
+    query_ds_p.add_argument(
+        "--start-cursor",
+        default=None,
+        metavar="UUID",
+        help="Pagination cursor (UUID) from a previous response.",
+    )
+    query_ds_p.add_argument(
+        "--page-size",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Number of results to return, max 100 (default: 10).",
+    )
+    query_ds_p.add_argument(
+        "--in-trash",
+        action="store_true",
+        help="Include trashed entries.",
+    )
+    query_ds_p.add_argument(
+        "--result-type",
+        default=None,
+        metavar="TYPE",
+        help="Optional Notion result_type filter.",
     )
 
     create_p = sub.add_parser(
@@ -636,9 +872,38 @@ def build_parser() -> argparse.ArgumentParser:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def normalize_profile_args(argv: list[str]) -> list[str]:
+    """Allow -p/--profile before or after subcommand by normalizing argv."""
+    normalized: list[str] = []
+    profile_value: str | None = None
+
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "-p" or token == "--profile":
+            if i + 1 >= len(argv):
+                normalized.append(token)
+                i += 1
+                continue
+            profile_value = argv[i + 1]
+            i += 2
+            continue
+        if token.startswith("--profile="):
+            profile_value = token.split("=", 1)[1]
+            i += 1
+            continue
+
+        normalized.append(token)
+        i += 1
+
+    if profile_value is not None:
+        return ["--profile", profile_value, *normalized]
+    return normalized
+
+
 def main() -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(normalize_profile_args(sys.argv[1:]))
 
     if args.command == "configure":
         cmd_configure(args)
@@ -646,6 +911,12 @@ def main() -> None:
         cmd_search(args)
     elif args.command == "fetch-page":
         cmd_fetch_page(args)
+    elif args.command == "fetch-database":
+        cmd_fetch_database(args)
+    elif args.command == "fetch-data-source":
+        cmd_fetch_data_source(args)
+    elif args.command == "query-data-source":
+        cmd_query_data_source(args)
     elif args.command == "create-page":
         cmd_create_page(args)
     elif args.command == "update-page":
