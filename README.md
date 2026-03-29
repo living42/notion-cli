@@ -1,6 +1,6 @@
 # notion-cli
 
-A lightweight, zero-setup command-line tool to search and read your Notion pages. Perfect for scripting, LLM integrations, and automation.
+A lightweight, zero-setup command-line tool to search, read, and update your Notion pages. Perfect for scripting, LLM integrations, and automation.
 
 ```bash
 # Search your Notion workspace
@@ -8,6 +8,9 @@ notion search "project roadmap"
 
 # Read a page as clean Markdown
 notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
+
+# Update page content
+notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --old "Draft" --new "Published"
 ```
 
 ---
@@ -17,6 +20,7 @@ notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
 - **One-liner installation** — No `pip install`, no virtual environments. Just run it.
 - **Clean Markdown output** — Notion XML is auto-converted to readable Markdown links
 - **Human & machine-friendly** — Output is both easy to read and easy to parse
+- **Page content updates** — Search-and-replace or fully replace page markdown
 - **Pagination support** — Walk through large result sets with cursors
 - **Slice large pages** — View only the lines you need with `--slice`
 - **Metadata preserved** — API metadata in hidden HTML comments for traceability
@@ -45,7 +49,7 @@ That's it!
 
 ### 1. Configure Your Secret
 
-Get your Notion integration token from [https://www.notion.so/profile/integrations/internal](https://www.notion.so/profile/integrations/internal).
+Get your Notion integration token from [https://www.notion.so/profile/integrations](https://www.notion.so/profile/integrations).
 
 ```bash
 notion configure
@@ -127,6 +131,37 @@ request_id: req-002...
 -->
 ```
 
+### 4. Update a Page
+
+```bash
+# Replace one string with another
+notion update-page abc123def456abc123def456abc123de --old "Status: Draft" --new "Status: Published"
+
+# Replace the entire page from a file
+notion update-page abc123def456abc123def456abc123de --replace --content-file ./page.md
+```
+
+**Output** — A compact success summary with page info and update metadata.
+
+```markdown
+# ✅ Updated Page
+- **Title:** Engineering Roadmap
+- **URL:** https://www.notion.so/Engineering-Roadmap-def456...
+- **Page ID:** def456...
+- **Mode:** update_content
+- **Truncated:** false
+- **Unknown block IDs:** []
+
+---
+
+<!-- metadata
+page_id: def456...
+mode: update_content
+truncated: false
+unknown_block_ids: []
+-->
+```
+
 ---
 
 ## Commands Reference
@@ -190,6 +225,49 @@ notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 0-20
 notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --slice 50-80
 ```
 
+### `notion update-page PAGE_ID [OPTIONS]`
+
+Update a page's Markdown content.
+
+**Targeted update mode:**
+
+| Option | Description |
+|---|---|
+| `<page_id>` | The UUID of the page to update (required) |
+| `--old TEXT` | Existing string to find; repeat for multiple updates |
+| `--new TEXT` | Replacement string; repeat for multiple updates |
+| `--replace-all-matches` | Replace all matches for each `--old` value |
+| `--allow-deleting-content` | Allow operations that delete child pages or databases |
+
+**Replace mode:**
+
+| Option | Description |
+|---|---|
+| `--replace` | Replace the entire page content |
+| `--content TEXT` | Replacement Markdown content |
+| `--content-file PATH` | Read replacement Markdown from a file |
+| `--allow-deleting-content` | Allow operations that delete child pages or databases |
+
+If `--replace` is used without `--content` or `--content-file`, content is read from `stdin`.
+
+**Examples:**
+
+```bash
+# Replace one string
+notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --old "Draft" --new "Published"
+
+# Apply multiple targeted replacements
+notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a \
+  --old "Q1" --new "Q2" \
+  --old "draft" --new "final"
+
+# Replace the entire page from inline content
+notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --replace --content "# New Title\n\nNew body"
+
+# Replace the entire page from a file
+notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --replace --content-file ./page.md
+```
+
 ---
 
 ## How It Works
@@ -210,6 +288,9 @@ notion search "bugs" | llm -m gpt-4 "summarize these Notion search results"
 
 # Read a page and analyze it
 notion fetch-page <page_id> | llm -m claude "extract todos from this page"
+
+# Update a page after generating revised text
+notion update-page <page_id> --replace --content-file ./rewritten-page.md
 ```
 
 **Scripting & Data Export:**
@@ -237,6 +318,9 @@ Run `notion configure` to set up your integration secret.
 **"Error 401: Unauthorized"**
 Your secret is invalid or expired. Run `notion configure` again.
 
+**"Error 403: restricted_resource"**
+Your integration does not have Notion's **update content** capability for the target page. Enable it in the integration settings.
+
 **"Error 404: Not found"**
 The page UUID doesn't exist or your integration doesn't have access to it. Check the ID and page permissions in Notion.
 
@@ -261,10 +345,10 @@ You can edit it directly if needed, but `notion configure` is safer.
 
 ## Limitations
 
-This tool is read-only. It cannot:
-- Create or edit pages
-- Manage databases or properties
-- Handle block-level operations (create/update/delete blocks)
+This tool supports searching, reading, and Markdown page-content updates. It cannot:
+- Create new pages
+- Manage databases or page properties
+- Handle general block-level operations (create/update/delete blocks outside the page-markdown endpoint)
 - Use OAuth (requires a single Internal Integration token)
 
 ---

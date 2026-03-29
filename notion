@@ -21,10 +21,14 @@ CONFIG_PATH = Path.home() / ".config" / "notion-cli" / "config.json"
 # Config helpers
 # ---------------------------------------------------------------------------
 
+def fail(message: str) -> "Never":
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
-        print("No config found. Run `notion configure` first.", file=sys.stderr)
-        sys.exit(1)
+        fail("No config found. Run `notion configure` first.")
     with CONFIG_PATH.open() as f:
         return json.load(f)
 
@@ -52,8 +56,7 @@ def notion_post(path: str, secret: str, body: dict) -> dict:
     url = f"https://api.notion.com{path}"
     resp = httpx.post(url, headers=headers(secret), json=body)
     if resp.status_code != 200:
-        print(f"Error {resp.status_code}: {resp.text}", file=sys.stderr)
-        sys.exit(1)
+        fail(f"Error {resp.status_code}: {resp.text}")
     return resp.json()
 
 
@@ -61,8 +64,15 @@ def notion_get(path: str, secret: str) -> dict:
     url = f"https://api.notion.com{path}"
     resp = httpx.get(url, headers=headers(secret))
     if resp.status_code != 200:
-        print(f"Error {resp.status_code}: {resp.text}", file=sys.stderr)
-        sys.exit(1)
+        fail(f"Error {resp.status_code}: {resp.text}")
+    return resp.json()
+
+
+def notion_patch(path: str, secret: str, body: dict) -> dict:
+    url = f"https://api.notion.com{path}"
+    resp = httpx.patch(url, headers=headers(secret), json=body)
+    if resp.status_code != 200:
+        fail(f"Error {resp.status_code}: {resp.text}")
     return resp.json()
 
 
@@ -79,8 +89,7 @@ def cmd_configure(_args) -> None:
 
     secret = input("Enter your Notion integration secret: ").strip()
     if not secret:
-        print("Secret cannot be empty.", file=sys.stderr)
-        sys.exit(1)
+        fail("Secret cannot be empty.")
 
     save_config({"notion_secret": secret})
     print(f"Config saved to {CONFIG_PATH}")
@@ -153,10 +162,9 @@ def format_search_output(data: dict) -> str:
     sections = [format_search_result(r) for r in results]
     body = "\n\n".join(sections)
 
-    # Metadata block
     meta_lines = []
     if data.get("has_more"):
-        meta_lines.append(f"has_more: true")
+        meta_lines.append("has_more: true")
     next_cursor = data.get("next_cursor")
     if next_cursor:
         meta_lines.append(f"next_cursor: {next_cursor}")
@@ -172,19 +180,20 @@ def format_search_output(data: dict) -> str:
 
 import re as _re
 
+
 def convert_notion_markdown(raw: str) -> str:
     """Convert Notion-flavoured XML tags in the markdown string to standard Markdown."""
-    # <page url="URL">Title</page>  →  [Title](URL)
     raw = _re.sub(r'<page url="([^"]+)">([^<]*)</page>', r'[\2](\1)', raw)
-    # strip <empty-block/>
     raw = _re.sub(r'<empty-block\s*/>', '', raw)
-    # clean up excess blank lines left by stripped tags
     raw = _re.sub(r'\n{3,}', '\n\n', raw)
     return raw.strip()
 
 
-def format_fetch_output(data: dict, page_meta: dict, slice_range: tuple[int, int] | None = None) -> str:
-    # Header: title + URL
+def format_fetch_output(
+    data: dict,
+    page_meta: dict,
+    slice_range: tuple[int, int] | None = None,
+) -> str:
     icon = extract_icon(page_meta)
     title = extract_title(page_meta)
     url = page_meta.get("url", "")
@@ -196,7 +205,6 @@ def format_fetch_output(data: dict, page_meta: dict, slice_range: tuple[int, int
     raw_md = data.get("markdown", "")
     body = convert_notion_markdown(raw_md)
 
-    # Apply line slice to body only
     if slice_range is not None:
         start, end = slice_range
         body_lines = body.splitlines()
@@ -213,6 +221,121 @@ def format_fetch_output(data: dict, page_meta: dict, slice_range: tuple[int, int
         meta_lines.append(f"slice: {slice_range[0]}-{slice_range[1]}")
     meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
     return header + "\n\n" + body + "\n\n---\n\n" + meta
+
+
+def format_update_page_output(update_data: dict, page_meta: dict, mode: str) -> str:
+    title = extract_title(page_meta)
+    url = page_meta.get("url", "")
+    unknown = update_data.get("unknown_block_ids", [])
+
+    lines = [
+        "# ✅ Updated Page",
+        f"- **Title:** {title}",
+        f"- **URL:** {url}",
+        f"- **Page ID:** {update_data.get('id', page_meta.get('id', ''))}",
+        f"- **Mode:** {mode}",
+        f"- **Truncated:** {str(update_data.get('truncated', False)).lower()}",
+        f"- **Unknown block IDs:** {', '.join(unknown) if unknown else '[]'}",
+    ]
+
+    meta_lines = [
+        f"page_id: {update_data.get('id', page_meta.get('id', ''))}",
+        f"mode: {mode}",
+        f"truncated: {str(update_data.get('truncated', False)).lower()}",
+        f"unknown_block_ids: {', '.join(unknown) if unknown else '[]'}",
+    ]
+    request_id = update_data.get("request_id", "")
+    if request_id:
+        meta_lines.append(f"request_id: {request_id}")
+
+    meta = "<!-- metadata\n" + "\n".join(meta_lines) + "\n-->"
+    return "\n".join(lines) + "\n\n---\n\n" + meta
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing helpers
+# ---------------------------------------------------------------------------
+
+def parse_slice(value: str) -> tuple[int, int]:
+    """Parse 'n-m' into (n, m). Raises argparse-friendly ValueError on bad input."""
+    parts = value.split("-")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(f"--slice must be in the form N-M, got: {value!r}")
+    try:
+        start, end = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--slice values must be integers, got: {value!r}")
+    if start < 0 or end < start:
+        raise argparse.ArgumentTypeError(f"--slice requires 0 <= N <= M, got: {value!r}")
+    return (start, end)
+
+
+def read_replace_content(args) -> str:
+    if args.content is not None and args.content_file is not None:
+        fail("Use only one of --content or --content-file.")
+
+    if args.content is not None:
+        return args.content
+
+    if args.content_file is not None:
+        path = Path(args.content_file)
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as e:
+            fail(f"Unable to read --content-file {path}: {e}")
+
+    if sys.stdin.isatty():
+        fail("Replace mode requires --content, --content-file, or piped stdin.")
+
+    content = sys.stdin.read()
+    if content == "":
+        fail("Replace mode requires --content, --content-file, or piped stdin.")
+    return content
+
+
+def build_update_page_body(args) -> tuple[str, dict]:
+    if args.replace:
+        if args.old or args.new:
+            fail("Do not mix --replace with --old/--new.")
+
+        content = read_replace_content(args)
+        body: dict = {
+            "type": "replace_content",
+            "replace_content": {
+                "new_str": content,
+            },
+        }
+        if args.allow_deleting_content:
+            body["replace_content"]["allow_deleting_content"] = True
+        return ("replace_content", body)
+
+    if args.content is not None or args.content_file is not None:
+        fail("--content and --content-file are only valid with --replace.")
+
+    if len(args.old) != len(args.new):
+        fail("--old and --new must be provided the same number of times.")
+    if not args.old:
+        fail("Update mode requires at least one --old/--new pair, or use --replace.")
+
+    content_updates = []
+    for old_str, new_str in zip(args.old, args.new):
+        update: dict = {
+            "old_str": old_str,
+            "new_str": new_str,
+        }
+        if args.replace_all_matches:
+            update["replace_all_matches"] = True
+        content_updates.append(update)
+
+    body = {
+        "type": "update_content",
+        "update_content": {
+            "content_updates": content_updates,
+        },
+    }
+    if args.allow_deleting_content:
+        body["update_content"]["allow_deleting_content"] = True
+    return ("update_content", body)
 
 
 # ---------------------------------------------------------------------------
@@ -244,30 +367,25 @@ def cmd_search(args) -> None:
     print(format_search_output(result))
 
 
-def parse_slice(value: str) -> tuple[int, int]:
-    """Parse 'n-m' into (n, m). Raises argparse-friendly ValueError on bad input."""
-    parts = value.split("-")
-    if len(parts) != 2:
-        raise argparse.ArgumentTypeError(f"--slice must be in the form N-M, got: {value!r}")
-    try:
-        start, end = int(parts[0]), int(parts[1])
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"--slice values must be integers, got: {value!r}")
-    if start < 0 or end < start:
-        raise argparse.ArgumentTypeError(f"--slice requires 0 <= N <= M, got: {value!r}")
-    return (start, end)
-
-
 def cmd_fetch_page(args) -> None:
     config = load_config()
     secret = config["notion_secret"]
 
-    # Fetch page metadata and markdown content
     page_meta = notion_get(f"/v1/pages/{args.page_id}", secret)
     data = notion_get(f"/v1/pages/{args.page_id}/markdown", secret)
 
     slice_range = parse_slice(args.slice) if args.slice else None
     print(format_fetch_output(data, page_meta, slice_range))
+
+
+def cmd_update_page(args) -> None:
+    config = load_config()
+    secret = config["notion_secret"]
+
+    mode, body = build_update_page_body(args)
+    update_data = notion_patch(f"/v1/pages/{args.page_id}/markdown", secret, body)
+    page_meta = notion_get(f"/v1/pages/{args.page_id}", secret)
+    print(format_update_page_output(update_data, page_meta, mode))
 
 
 # ---------------------------------------------------------------------------
@@ -277,17 +395,15 @@ def cmd_fetch_page(args) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notion",
-        description="Lightweight Notion CLI for searching and reading pages.",
+        description="Lightweight Notion CLI for searching, reading, and updating pages.",
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    # configure
     sub.add_parser(
         "configure",
         help="Set up or update your Notion integration secret.",
     )
 
-    # search
     search_p = sub.add_parser(
         "search",
         help="Search Notion pages and databases.",
@@ -324,7 +440,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of results to return, max 100 (default: 10).",
     )
 
-    # fetch-page
     fetch_p = sub.add_parser(
         "fetch-page",
         help="Fetch a Notion page as Markdown.",
@@ -338,6 +453,55 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N-M",
         help="Output only lines N through M of the page body (0-indexed, e.g. --slice 0-20).",
+    )
+
+    update_p = sub.add_parser(
+        "update-page",
+        help="Update a Notion page's Markdown content.",
+    )
+    update_p.add_argument(
+        "page_id",
+        help="The UUID of the Notion page to update.",
+    )
+    update_p.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace the entire page content instead of applying search-and-replace updates.",
+    )
+    update_p.add_argument(
+        "--content",
+        default=None,
+        help="Replacement Markdown content (used with --replace).",
+    )
+    update_p.add_argument(
+        "--content-file",
+        default=None,
+        metavar="PATH",
+        help="Read replacement Markdown content from a file (used with --replace).",
+    )
+    update_p.add_argument(
+        "--old",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="Existing content string to match. Repeat for multiple updates.",
+    )
+    update_p.add_argument(
+        "--new",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="Replacement string for the corresponding --old value. Repeat for multiple updates.",
+    )
+    update_p.add_argument(
+        "--replace-all-matches",
+        action="store_true",
+        help="Replace all matches for each --old value instead of failing on ambiguous matches.",
+    )
+    update_p.add_argument(
+        "--allow-deleting-content",
+        action="store_true",
+        help="Allow updates that would delete child pages or databases.",
     )
 
     return parser
@@ -357,6 +521,8 @@ def main() -> None:
         cmd_search(args)
     elif args.command == "fetch-page":
         cmd_fetch_page(args)
+    elif args.command == "update-page":
+        cmd_update_page(args)
     else:
         parser.print_help()
 
