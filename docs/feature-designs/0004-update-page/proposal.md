@@ -6,7 +6,7 @@
 
 This proposal is based on:
 
-- `docs/feature-designs/0002-update-page/idea.md`
+- `docs/feature-designs/0004-update-page/idea.md`
 - the current repository structure (`notion`, `README.md`)
 - Notion's API doc for page markdown updates: `https://developers.notion.com/reference/update-page-markdown.md`
 

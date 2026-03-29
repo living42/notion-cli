@@ -1,7 +1,7 @@
 # Feature Design: Multiple Config Profiles (`-p/--profile`)
 
 Date: 2026-03-11
-Status: Plan
+Status: Implemented
 
 ---
 

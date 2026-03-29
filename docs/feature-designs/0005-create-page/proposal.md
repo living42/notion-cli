@@ -6,7 +6,7 @@
 
 This proposal is based on:
 
-- `docs/feature-designs/0003-create-page/idea.md`
+- `docs/feature-designs/0005-create-page/idea.md`
 - the current repository structure (`notion`, `README.md`)
 - Notion's API doc for page creation: `https://developers.notion.com/reference/post-page.md`
 - the API reference fetched via `curl`, as requested in the idea doc
