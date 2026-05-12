@@ -49,17 +49,15 @@ notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
 
 ## Installation
 
-You need `uv` (the Python script runner). [Install it here](https://docs.astral.sh/uv/).
+You need Go 1.24+ installed.
 
-Then download and install the script with:
+Install with:
 
 ```bash
-mkdir -p ~/.local/bin
-curl -fSL -o ~/.local/bin/notion https://raw.githubusercontent.com/living42/notion-cli/refs/heads/main/notion
-chmod +x ~/.local/bin/notion
+go install github.com/living42/notion-cli/cmd/notion@latest
 ```
 
-> Make sure `~/.local/bin` is in your `PATH`.
+> Make sure `$(go env GOPATH)/bin` (or your `GOBIN`) is in your `PATH`.
 
 ---
 
