@@ -457,7 +457,7 @@ def build_create_page_parent(args) -> dict:
     has_data_source_parent = bool(args.parent_data_source_id)
 
     if has_page_parent == has_data_source_parent:
-        fail("create-page requires exactly one of --parent-page-id or --parent-data-source-id.")
+        fail("create-page requires exactly one of --parent-page-id or --parent-data-source-id (not both, not neither).")
 
     if has_page_parent:
         return {
@@ -488,6 +488,8 @@ def build_create_page_body(args, *, data_source_title_property: str | None = Non
 
     parent = build_create_page_parent(args)
     if parent["type"] == "data_source_id":
+        if not data_source_title_property:
+            fail("Unable to determine title property for the selected data source.")
         title_property_name = data_source_title_property
     else:
         title_property_name = "title"
