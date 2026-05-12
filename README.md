@@ -1,6 +1,6 @@
 # notion-cli
 
-A lightweight, zero-setup command-line tool to search, read, create, and update your Notion pages, plus inspect databases and data sources. It is designed to work well for both humans and automation.
+A lightweight, zero-setup command-line tool to search, read, create, move, and update your Notion pages, plus inspect databases and data sources. It is designed to work well for both humans and automation.
 
 ```bash
 # Search your Notion workspace
@@ -15,6 +15,9 @@ notion create-page "Release Notes" --parent-page-id 3c90c3cc-0d44-4b50-8888-8dd2
 # Update page content
 notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --old "Draft" --new "Published"
 
+# Move a page under another page
+notion move-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --parent-page-id 1c90c3cc-0d44-4b50-8888-8dd25736052a
+
 # Inspect a database or data source
 notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
 notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
@@ -25,10 +28,11 @@ notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
 ## Features
 
 - **One-liner installation** — No `pip install`, no virtual environments. Just run it.
-- **Readable Markdown output** — `search`, `fetch-page`, `create-page`, and `update-page` produce compact Markdown output.
+- **Readable Markdown output** — `search`, `fetch-page`, `create-page`, `move-page`, and `update-page` produce compact Markdown output.
 - **Database + data source support** — Fetch databases, fetch data sources, and query data sources.
 - **Pretty JSON where it helps** — `fetch-database`, `fetch-data-source`, and `query-data-source` return pretty-printed JSON.
 - **Page creation** — Create child pages from inline Markdown, files, or stdin.
+- **Page moves** — Move an existing page under a different parent page.
 - **Page content updates** — Search-and-replace or fully replace page markdown.
 - **Multi-profile config** — Use different Notion tokens with `-p/--profile`.
 - **Pagination support** — Walk through large result sets with cursors.
@@ -131,7 +135,13 @@ notion update-page abc123def456abc123def456abc123de --old "Status: Draft" --new 
 notion update-page abc123def456abc123def456abc123de --replace --content-file ./page.md
 ```
 
-### 6. Inspect databases and data sources
+### 6. Move a page
+
+```bash
+notion move-page abc123def456abc123def456abc123de --parent-page-id fed321cba654fed321cba654fed321cb
+```
+
+### 7. Inspect databases and data sources
 
 ```bash
 notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
@@ -221,6 +231,15 @@ Replace mode:
 | `--content-file PATH` | Read replacement Markdown from a file |
 | `--allow-deleting-content` | Allow operations that delete child pages or databases |
 
+### `notion move-page PAGE_ID --parent-page-id UUID`
+
+Move an existing page under a different parent page.
+
+| Option | Description |
+|---|---|
+| `<page_id>` | Page to move |
+| `--parent-page-id UUID` | Destination parent page ID |
+
 ### `notion fetch-database DATABASE_ID`
 
 Fetch a database object and print pretty JSON.
@@ -257,7 +276,7 @@ Run `notion configure -p work`.
 Your secret is invalid or expired. Re-run `notion configure`.
 
 **"Error 403: restricted_resource"**
-Your integration may be missing the required Notion capability. Use **Insert Content** for `create-page` and **Update Content** for `update-page`.
+Your integration may be missing the required Notion capability. Use **Insert Content** for `create-page`, **Update Content** for `update-page`, and ensure your integration can edit/move pages for `move-page`.
 
 **"Error 404: Not found"**
 Check the ID and make sure your integration has access.
@@ -290,7 +309,7 @@ Legacy single-secret configs are also accepted and will continue to work.
 
 ## Limitations
 
-This tool supports searching, reading, creating child pages, updating page markdown, and read-only inspection of databases and data sources. It does not:
+This tool supports searching, reading, creating child pages, moving pages between parent pages, updating page markdown, and read-only inspection of databases and data sources. It does not:
 
 - Create workspace-level pages
 - Create pages under databases or data sources

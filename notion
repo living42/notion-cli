@@ -389,6 +389,33 @@ def format_create_page_output(page_data: dict) -> str:
     return "\n".join(lines) + "\n\n---\n\n" + render_metadata_block(meta_lines)
 
 
+def format_move_page_output(page_data: dict, parent_page_id: str) -> str:
+    title = extract_title(page_data)
+    url = page_data.get("url", "")
+    page_id = page_data.get("id", "")
+    edited = page_data.get("last_edited_time", "")
+
+    lines = [
+        "# ✅ Moved Page",
+        f"- **Title:** {title}",
+        f"- **URL:** {url}",
+        f"- **Page ID:** {page_id}",
+        f"- **Parent:** page `{parent_page_id}`",
+    ]
+    if edited:
+        lines.append(f"- **Last edited:** {edited}")
+
+    meta_lines = [
+        f"page_id: {page_id}",
+        f"parent: page_id:{parent_page_id}",
+    ]
+    request_id = page_data.get("request_id", "")
+    if request_id:
+        meta_lines.append(f"request_id: {request_id}")
+
+    return "\n".join(lines) + "\n\n---\n\n" + render_metadata_block(meta_lines)
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing helpers
 # ---------------------------------------------------------------------------
@@ -486,6 +513,23 @@ def build_create_page_body(args) -> dict:
         body["markdown"] = content
 
     return body
+
+
+def build_move_page_body(args, page_id: str) -> tuple[str, dict]:
+    if not args.parent_page_id:
+        fail("move-page requires --parent-page-id.")
+    parent_page_id = normalize_notion_id(args.parent_page_id, "page")
+    if parent_page_id == page_id:
+        fail("--parent-page-id must be different from the page being moved.")
+    return (
+        parent_page_id,
+        {
+            "parent": {
+                "type": "page_id",
+                "page_id": parent_page_id,
+            }
+        },
+    )
 
 
 def build_update_page_body(args) -> tuple[str, dict]:
@@ -649,6 +693,17 @@ def cmd_create_page(args) -> None:
     print(format_create_page_output(page_data))
 
 
+def cmd_move_page(args) -> None:
+    profile = get_selected_profile(args.profile)
+    config = load_config()
+    secret = get_profile_secret(config, profile)
+
+    page_id = normalize_notion_id(args.page_id, "page")
+    parent_page_id, body = build_move_page_body(args, page_id)
+    page_data = notion_patch(f"/v1/pages/{page_id}", secret, body)
+    print(format_move_page_output(page_data, parent_page_id))
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -666,7 +721,7 @@ def add_profile_argument(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notion",
-        description="Lightweight Notion CLI for searching, reading, creating, and updating pages, databases, and data sources.",
+        description="Lightweight Notion CLI for searching, reading, creating, moving, and updating pages, databases, and data sources.",
     )
     add_profile_argument(parser)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -816,6 +871,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read Markdown body for the new page from a file.",
     )
 
+    move_p = sub.add_parser(
+        "move-page",
+        help="Move an existing page under a different parent page.",
+    )
+    move_p.add_argument(
+        "page_id",
+        help="The UUID of the Notion page to move.",
+    )
+    move_p.add_argument(
+        "--parent-page-id",
+        required=True,
+        metavar="UUID",
+        help="The UUID of the destination parent page.",
+    )
+
     update_p = sub.add_parser(
         "update-page",
         help="Update a Notion page's Markdown content.",
@@ -919,6 +989,8 @@ def main() -> None:
         cmd_query_data_source(args)
     elif args.command == "create-page":
         cmd_create_page(args)
+    elif args.command == "move-page":
+        cmd_move_page(args)
     elif args.command == "update-page":
         cmd_update_page(args)
     else:
