@@ -6,6 +6,7 @@ Add a new command:
 
 ```bash
 notion move-page PAGE_ID --parent-page-id UUID
+notion move-page PAGE_ID --parent-data-source-id UUID
 ```
 
 This command moves an existing Notion page under a new parent page by calling:
@@ -25,16 +26,27 @@ with:
 }
 ```
 
+or:
+
+```json
+{
+  "parent": {
+    "type": "data_source_id",
+    "data_source_id": "..."
+  }
+}
+```
+
 ## Goals
 
 - Keep implementation lightweight in the existing single-file CLI
-- Support page-to-page moves only for the first version
+- Support moving pages under another page or a data source
 - Provide concise, markdown-friendly output like other write commands
 
 ## Non-Goals
 
 - Moving pages to workspace root
-- Moving pages under databases or data sources
+- Moving pages under databases
 - Property edits combined with move operations
 
 ## CLI Design
@@ -42,14 +54,15 @@ with:
 ### Command
 
 ```bash
-notion move-page PAGE_ID --parent-page-id UUID
+notion move-page PAGE_ID (--parent-page-id UUID | --parent-data-source-id UUID)
 ```
 
 ### Validation
 
 - `PAGE_ID` must be a valid page ID
-- `--parent-page-id` must be provided and valid
-- source page and destination parent must be different
+- exactly one of `--parent-page-id` or `--parent-data-source-id` must be provided
+- provided destination parent ID must be valid
+- when moving under a page, source page and destination parent must be different
 
 ### Output
 

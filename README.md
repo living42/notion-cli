@@ -18,6 +18,9 @@ notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --old "Draft" --new "Pub
 # Move a page under another page
 notion move-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --parent-page-id 1c90c3cc-0d44-4b50-8888-8dd25736052a
 
+# Move a page under a data source
+notion move-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --parent-data-source-id 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
+
 # Inspect a database or data source
 notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
 notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
@@ -32,7 +35,7 @@ notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
 - **Database + data source support** — Fetch databases, fetch data sources, and query data sources.
 - **Pretty JSON where it helps** — `fetch-database`, `fetch-data-source`, and `query-data-source` return pretty-printed JSON.
 - **Page creation** — Create child pages from inline Markdown, files, or stdin.
-- **Page moves** — Move an existing page under a different parent page.
+- **Page moves** — Move an existing page under a different parent page or data source.
 - **Page content updates** — Search-and-replace or fully replace page markdown.
 - **Multi-profile config** — Use different Notion tokens with `-p/--profile`.
 - **Pagination support** — Walk through large result sets with cursors.
@@ -139,6 +142,7 @@ notion update-page abc123def456abc123def456abc123de --replace --content-file ./p
 
 ```bash
 notion move-page abc123def456abc123def456abc123de --parent-page-id fed321cba654fed321cba654fed321cb
+notion move-page abc123def456abc123def456abc123de --parent-data-source-id 1d2e3f44aaaa4bbbcccc1234567890ab
 ```
 
 ### 7. Inspect databases and data sources
@@ -231,14 +235,17 @@ Replace mode:
 | `--content-file PATH` | Read replacement Markdown from a file |
 | `--allow-deleting-content` | Allow operations that delete child pages or databases |
 
-### `notion move-page PAGE_ID --parent-page-id UUID`
+### `notion move-page PAGE_ID [--parent-page-id UUID | --parent-data-source-id UUID]`
 
-Move an existing page under a different parent page.
+Move an existing page under a different parent page or data source.
 
 | Option | Description |
 |---|---|
 | `<page_id>` | Page to move |
 | `--parent-page-id UUID` | Destination parent page ID |
+| `--parent-data-source-id UUID` | Destination parent data source ID |
+
+Exactly one parent option is required.
 
 ### `notion fetch-database DATABASE_ID`
 
@@ -309,7 +316,7 @@ Legacy single-secret configs are also accepted and will continue to work.
 
 ## Limitations
 
-This tool supports searching, reading, creating child pages, moving pages between parent pages, updating page markdown, and read-only inspection of databases and data sources. It does not:
+This tool supports searching, reading, creating child pages, moving pages between parent pages/data sources, updating page markdown, and read-only inspection of databases and data sources. It does not:
 
 - Create workspace-level pages
 - Create pages under databases or data sources

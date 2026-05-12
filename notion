@@ -389,7 +389,7 @@ def format_create_page_output(page_data: dict) -> str:
     return "\n".join(lines) + "\n\n---\n\n" + render_metadata_block(meta_lines)
 
 
-def format_move_page_output(page_data: dict, parent_page_id: str) -> str:
+def format_move_page_output(page_data: dict, parent: dict) -> str:
     title = extract_title(page_data)
     url = page_data.get("url", "")
     page_id = page_data.get("id", "")
@@ -400,14 +400,22 @@ def format_move_page_output(page_data: dict, parent_page_id: str) -> str:
         f"- **Title:** {title}",
         f"- **URL:** {url}",
         f"- **Page ID:** {page_id}",
-        f"- **Parent:** page `{parent_page_id}`",
+        f"- **Parent:** {format_parent(parent)}",
     ]
     if edited:
         lines.append(f"- **Last edited:** {edited}")
 
+    parent_type = parent.get("type", "unknown")
+    if parent_type == "page_id":
+        parent_meta = f"parent: page_id:{parent.get('page_id', '')}"
+    elif parent_type == "data_source_id":
+        parent_meta = f"parent: data_source_id:{parent.get('data_source_id', '')}"
+    else:
+        parent_meta = f"parent: {parent_type}"
+
     meta_lines = [
         f"page_id: {page_id}",
-        f"parent: page_id:{parent_page_id}",
+        parent_meta,
     ]
     request_id = page_data.get("request_id", "")
     if request_id:
@@ -515,21 +523,25 @@ def build_create_page_body(args) -> dict:
     return body
 
 
-def build_move_page_body(args, page_id: str) -> tuple[str, dict]:
-    if not args.parent_page_id:
-        fail("move-page requires --parent-page-id.")
-    parent_page_id = normalize_notion_id(args.parent_page_id, "page")
-    if parent_page_id == page_id:
-        fail("--parent-page-id must be different from the page being moved.")
-    return (
-        parent_page_id,
-        {
-            "parent": {
-                "type": "page_id",
-                "page_id": parent_page_id,
-            }
-        },
-    )
+def build_move_page_body(args, page_id: str) -> tuple[dict, dict]:
+    if args.parent_page_id:
+        parent_page_id = normalize_notion_id(args.parent_page_id, "page")
+        if parent_page_id == page_id:
+            fail("--parent-page-id must be different from the page being moved.")
+        parent = {
+            "type": "page_id",
+            "page_id": parent_page_id,
+        }
+        return (parent, {"parent": parent})
+
+    if args.parent_data_source_id:
+        parent = {
+            "type": "data_source_id",
+            "data_source_id": normalize_notion_id(args.parent_data_source_id, "data source"),
+        }
+        return (parent, {"parent": parent})
+
+    fail("move-page requires one of --parent-page-id or --parent-data-source-id.")
 
 
 def build_update_page_body(args) -> tuple[str, dict]:
@@ -699,9 +711,9 @@ def cmd_move_page(args) -> None:
     secret = get_profile_secret(config, profile)
 
     page_id = normalize_notion_id(args.page_id, "page")
-    parent_page_id, body = build_move_page_body(args, page_id)
+    parent, body = build_move_page_body(args, page_id)
     page_data = notion_patch(f"/v1/pages/{page_id}", secret, body)
-    print(format_move_page_output(page_data, parent_page_id))
+    print(format_move_page_output(page_data, parent))
 
 
 # ---------------------------------------------------------------------------
@@ -873,17 +885,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     move_p = sub.add_parser(
         "move-page",
-        help="Move an existing page under a different parent page.",
+        help="Move an existing page under a different parent page or data source.",
     )
     move_p.add_argument(
         "page_id",
         help="The UUID of the Notion page to move.",
     )
-    move_p.add_argument(
+    move_parent = move_p.add_mutually_exclusive_group(required=True)
+    move_parent.add_argument(
         "--parent-page-id",
-        required=True,
         metavar="UUID",
         help="The UUID of the destination parent page.",
+    )
+    move_parent.add_argument(
+        "--parent-data-source-id",
+        metavar="UUID",
+        help="The UUID of the destination parent data source.",
     )
 
     update_p = sub.add_parser(
