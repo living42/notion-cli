@@ -453,23 +453,50 @@ def read_create_content(args) -> str | None:
 
 
 def build_create_page_parent(args) -> dict:
-    if not args.parent_page_id:
-        fail("create-page requires --parent-page-id.")
+    has_page_parent = bool(args.parent_page_id)
+    has_data_source_parent = bool(args.parent_data_source_id)
+
+    if has_page_parent == has_data_source_parent:
+        fail("create-page requires exactly one of --parent-page-id or --parent-data-source-id.")
+
+    if has_page_parent:
+        return {
+            "type": "page_id",
+            "page_id": normalize_notion_id(args.parent_page_id, "page"),
+        }
+
     return {
-        "type": "page_id",
-        "page_id": normalize_notion_id(args.parent_page_id, "page"),
+        "type": "data_source_id",
+        "data_source_id": normalize_notion_id(args.parent_data_source_id, "data source"),
     }
 
 
-def build_create_page_body(args) -> dict:
+def extract_title_property_name(data_source: dict) -> str:
+    properties = data_source.get("properties")
+    if isinstance(properties, dict):
+        for name, prop in properties.items():
+            if isinstance(name, str) and isinstance(prop, dict) and prop.get("type") == "title":
+                return name
+    fail("Unable to determine title property for the selected data source.")
+
+
+def build_create_page_body(args, *, data_source_title_property: str | None = None) -> dict:
     title = args.title.strip()
     if not title:
         fail("Title cannot be empty.")
 
+    parent = build_create_page_parent(args)
+    if parent["type"] == "data_source_id":
+        if not data_source_title_property:
+            fail("Unable to determine title property for the selected data source.")
+        title_property_name = data_source_title_property
+    else:
+        title_property_name = "title"
+
     body: dict = {
-        "parent": build_create_page_parent(args),
+        "parent": parent,
         "properties": {
-            "title": {
+            title_property_name: {
                 "title": [
                     {
                         "text": {
@@ -645,7 +672,17 @@ def cmd_create_page(args) -> None:
     config = load_config()
     secret = get_profile_secret(config, profile)
 
-    page_data = notion_post("/v1/pages", secret, build_create_page_body(args))
+    title_property_name = None
+    if args.parent_data_source_id:
+        data_source_id = normalize_notion_id(args.parent_data_source_id, "data source")
+        data_source = notion_get(f"/v1/data_sources/{data_source_id}", secret)
+        title_property_name = extract_title_property_name(data_source)
+
+    page_data = notion_post(
+        "/v1/pages",
+        secret,
+        build_create_page_body(args, data_source_title_property=title_property_name),
+    )
     print(format_create_page_output(page_data))
 
 
@@ -792,7 +829,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     create_p = sub.add_parser(
         "create-page",
-        help="Create a new Notion page under an existing page.",
+        help="Create a new Notion page under an existing page or data source.",
     )
     create_p.add_argument(
         "title",
@@ -803,6 +840,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="UUID",
         help="Create the new page under an existing page.",
+    )
+    create_p.add_argument(
+        "--parent-data-source-id",
+        default=None,
+        metavar="UUID",
+        help="Create the new page under an existing data source.",
     )
     create_p.add_argument(
         "--content",
