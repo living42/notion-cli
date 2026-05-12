@@ -54,7 +54,7 @@ You need Go 1.24+ installed.
 Install with:
 
 ```bash
-go install github.com/living42/notion-cli/cmd/notion@latest
+go install github.com/living42/notion-cli@latest
 ```
 
 > Make sure `$(go env GOPATH)/bin` (or your `GOBIN`) is in your `PATH`.
