@@ -9,8 +9,11 @@ notion search "project roadmap"
 # Read a page as Markdown
 notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
 
-# Create a child page from Markdown
+# Create a child page from Markdown (page parent)
 notion create-page "Release Notes" --parent-page-id 3c90c3cc-0d44-4b50-8888-8dd25736052a --content-file ./release-notes.md
+
+# Create a data source entry
+notion create-page "Release Notes" --parent-data-source-id 1d2e3f44-aaaa-bbbb-cccc-1234567890ab --content-file ./release-notes.md
 
 # Update page content
 notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --old "Draft" --new "Published"
@@ -111,13 +114,16 @@ notion fetch-page abc123def456abc123def456abc123de --slice 0-30
 ### 4. Create a page
 
 ```bash
-# blank child page
+# blank child page (page parent)
 notion create-page "Scratchpad" --parent-page-id abc123def456abc123def456abc123de
 
-# from a file
+# data source entry
+notion create-page "Release Notes" --parent-data-source-id 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
+
+# page parent: from a file
 notion create-page "Release Notes" --parent-page-id abc123def456abc123def456abc123de --content-file ./release-notes.md
 
-# from stdin
+# page parent: from stdin
 cat ./release-notes.md | notion create-page "Release Notes" --parent-page-id abc123def456abc123def456abc123de
 ```
 
@@ -185,18 +191,19 @@ Retrieve a single Notion page as Markdown.
 | `<page_id>` | Hyphenated or compact page ID |
 | `--slice N-M` | Show only lines N through M |
 
-### `notion create-page TITLE --parent-page-id UUID [OPTIONS]`
+### `notion create-page TITLE (--parent-page-id UUID | --parent-data-source-id UUID) [OPTIONS]`
 
-Create a new child page under an existing page.
+Create a new page under an existing page or data source.
 
 | Option | Description |
 |---|---|
 | `TITLE` | Title of the new page |
-| `--parent-page-id UUID` | Parent page ID |
+| `--parent-page-id UUID` | Parent page ID (for child page creation) |
+| `--parent-data-source-id UUID` | Parent data source ID (for creating a new data source entry) |
 | `--content TEXT` | Inline Markdown body |
 | `--content-file PATH` | Read Markdown body from a file |
 
-If neither `--content` nor `--content-file` is provided, content is read from `stdin` when piped; otherwise a blank page is created.
+Exactly one parent flag is required. If neither `--content` nor `--content-file` is provided, content is read from `stdin` when piped; otherwise a blank page is created.
 
 ### `notion update-page PAGE_ID [OPTIONS]`
 
