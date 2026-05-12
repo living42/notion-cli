@@ -473,11 +473,12 @@ def build_create_page_parent(args) -> dict:
 
 def extract_title_property_name(data_source: dict) -> str:
     properties = data_source.get("properties")
-    if isinstance(properties, dict):
-        for name, prop in properties.items():
-            if isinstance(name, str) and isinstance(prop, dict) and prop.get("type") == "title":
-                return name
-    fail("Unable to determine title property for the selected data source.")
+    if not isinstance(properties, dict) or not properties:
+        fail("Selected data source has no properties.")
+    for name, prop in properties.items():
+        if isinstance(name, str) and isinstance(prop, dict) and prop.get("type") == "title":
+            return name
+    fail("Selected data source has no title property.")
 
 
 def build_create_page_body(args, *, data_source_title_property: str | None = None) -> dict:
@@ -487,8 +488,6 @@ def build_create_page_body(args, *, data_source_title_property: str | None = Non
 
     parent = build_create_page_parent(args)
     if parent["type"] == "data_source_id":
-        if not data_source_title_property:
-            fail("Unable to determine title property for the selected data source.")
         title_property_name = data_source_title_property
     else:
         title_property_name = "title"
