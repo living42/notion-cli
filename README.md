@@ -2,33 +2,6 @@
 
 A lightweight, zero-setup command-line tool to search, read, create, move, and update your Notion pages, plus inspect databases and data sources. It is designed to work well for both humans and automation.
 
-```bash
-# Search your Notion workspace
-notion search "project roadmap"
-
-# Read a page as Markdown
-notion fetch-page 3c90c3cc-0d44-4b50-8888-8dd25736052a
-
-# Create a child page from Markdown (page parent)
-notion create-page "Release Notes" --parent-page-id 3c90c3cc-0d44-4b50-8888-8dd25736052a --content-file ./release-notes.md
-
-# Create a data source entry
-notion create-page "Release Notes" --parent-data-source-id 1d2e3f44-aaaa-bbbb-cccc-1234567890ab --content-file ./release-notes.md
-
-# Update page content
-notion update-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --old "Draft" --new "Published"
-
-# Move a page under another page
-notion move-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --parent-page-id 1c90c3cc-0d44-4b50-8888-8dd25736052a
-
-# Move a page under a data source
-notion move-page 3c90c3cc-0d44-4b50-8888-8dd25736052a --parent-data-source-id 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
-
-# Inspect a database or data source
-notion fetch-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
-notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
-```
-
 ---
 
 ## Features
@@ -49,15 +22,11 @@ notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
 
 ## Installation
 
-You need Go 1.24+ installed.
-
 Install with:
 
 ```bash
 go install github.com/living42/notion-cli@latest
 ```
-
-> Make sure `$(go env GOPATH)/bin` (or your `GOBIN`) is in your `PATH`.
 
 ---
 
