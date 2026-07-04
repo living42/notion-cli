@@ -124,8 +124,7 @@ func setupE2E(t *testing.T) {
 
 // setupFixtures creates the shared resources under root.
 //   - scratch page: built via the CLI (the thing under test)
-//   - test database + data source: built via the Notion API directly,
-//     because the CLI has no create-database command.
+//   - test database + data source: built via the CLI's create-database command
 func setupFixtures(secret string) error {
 	ts := time.Now().UnixNano()
 
@@ -135,9 +134,9 @@ func setupFixtures(secret string) error {
 	}
 	scratchPageID = scratchID
 
-	dbID, dsID, err := createDatabaseViaAPI(secret, rootPageID, fmt.Sprintf("e2e-test-db-%d", ts))
+	dbID, dsID, err := createDatabaseViaCLI(secret, rootPageID, fmt.Sprintf("e2e-test-db-%d", ts))
 	if err != nil {
-		_ = archivePageAPI(secret, scratchID)
+		_ = trashPageViaCLI(secret, scratchID)
 		return fmt.Errorf("create test database: %w", err)
 	}
 	testDBID = dbID
@@ -198,49 +197,69 @@ func writeTempConfig(secret string) (string, func(), error) {
 	return configPath, cleanup, nil
 }
 
-func createDatabaseViaAPI(secret, parentPageID, title string) (string, string, error) {
-	body := map[string]any{
-		"parent": map[string]any{"type": "page_id", "page_id": parentPageID},
-		"title":  []any{map[string]any{"text": map[string]any{"content": title}}},
-		"properties": map[string]any{
-			"Name": map[string]any{"title": map[string]any{}},
-		},
-	}
-	resp, err := notionPost("/v1/databases", secret, body)
+// createDatabaseViaCLI runs the create-database command as a subprocess and
+// returns the database ID and its first data source ID.
+func createDatabaseViaCLI(secret, parentPageID, title string) (string, string, error) {
+	configPath, cleanup, err := writeTempConfig(secret)
 	if err != nil {
 		return "", "", err
 	}
-	dbID, _ := resp["id"].(string)
+	defer cleanup()
+
+	cmd := exec.Command(binaryPath, "-p", e2eProfile, "create-database", title, "--parent-page-id", parentPageID)
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		e2eConfigPathEnv + "=" + configPath,
+	}
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", "", fmt.Errorf("create database via cli: %w\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(stdout.String()), &data); err != nil {
+		return "", "", fmt.Errorf("create database: parse output: %w\noutput: %s", err, stdout.String())
+	}
+	dbID := asString(data["id"])
 	if dbID == "" {
 		return "", "", fmt.Errorf("create database: no id in response")
 	}
-
-	dsID := firstDataSourceID(resp)
-	if dsID == "" {
-		// Some server versions only attach data sources after a follow-up read.
-		db, err := notionGet("/v1/databases/"+dbID, secret)
-		if err != nil {
-			return dbID, "", err
-		}
-		dsID = firstDataSourceID(db)
+	dss, _ := data["data_sources"].([]any)
+	if len(dss) == 0 {
+		return dbID, "", fmt.Errorf("create database: no data sources in response")
 	}
+	first, _ := dss[0].(map[string]any)
+	dsID := asString(first["id"])
 	if dsID == "" {
-		return dbID, "", fmt.Errorf("create database: no data source id found")
+		return dbID, "", fmt.Errorf("create database: data source has no id")
 	}
 	return dbID, dsID, nil
 }
 
-func firstDataSourceID(obj map[string]any) string {
-	dss, ok := obj["data_sources"].([]any)
-	if !ok || len(dss) == 0 {
-		return ""
+// trashPageViaCLI runs the trash-page command as a subprocess. It is used
+// only on the setup-failure path where we need best-effort cleanup.
+func trashPageViaCLI(secret, pageID string) error {
+	configPath, cleanup, err := writeTempConfig(secret)
+	if err != nil {
+		return err
 	}
-	first, ok := dss[0].(map[string]any)
-	if !ok {
-		return ""
+	defer cleanup()
+
+	cmd := exec.Command(binaryPath, "-p", e2eProfile, "trash-page", pageID)
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		e2eConfigPathEnv + "=" + configPath,
 	}
-	id, _ := first["id"].(string)
-	return id
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("trash page via cli: %w\nstderr: %s", err, stderr.String())
+	}
+	return nil
 }
 
 func extractPageID(output string) (string, error) {
@@ -254,11 +273,17 @@ func extractPageID(output string) (string, error) {
 
 // --- cleanup ---------------------------------------------------------------
 
-// cleanupRoot archives every direct child of the root page. Archiving is
-// recursive on Notion's side: trashing a page also trashes its content and
-// subpages, so a single pass is enough.
+// cleanupRoot moves every direct child of the root page to trash via the CLI.
+// Notion's trash is recursive: trashing a page also trashes its subpages and
+// trashing a database also trashes its data sources, so a single pass is enough.
 func cleanupRoot(secret, parentID string) error {
-	children, err := listBlockChildren(secret, parentID)
+	configPath, cleanup, err := writeTempConfig(secret)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	children, err := listBlockChildrenViaCLI(configPath, parentID)
 	if err != nil {
 		return err
 	}
@@ -269,17 +294,17 @@ func cleanupRoot(secret, parentID string) error {
 		if id == "" {
 			continue
 		}
-		var archiveErr error
+		var trashErr error
 		switch blockType {
 		case "child_page":
-			archiveErr = archivePageAPI(secret, id)
+			trashErr = runNotionCmd(configPath, "trash-page", id)
 		case "child_database":
-			archiveErr = archiveDatabaseAPI(secret, id)
+			trashErr = runNotionCmd(configPath, "trash-database", id)
 		default:
 			continue
 		}
-		if archiveErr != nil {
-			errs = append(errs, fmt.Sprintf("%s %s: %v", blockType, id, archiveErr))
+		if trashErr != nil {
+			errs = append(errs, fmt.Sprintf("%s %s: %v", blockType, id, trashErr))
 		}
 	}
 	if len(errs) > 0 {
@@ -288,42 +313,57 @@ func cleanupRoot(secret, parentID string) error {
 	return nil
 }
 
-func listBlockChildren(secret, blockID string) ([]map[string]any, error) {
-	var all []map[string]any
-	cursor := ""
-	for {
-		path := "/v1/blocks/" + blockID + "/children"
-		if cursor != "" {
-			path += "?start_cursor=" + cursor
-		}
-		resp, err := notionGet(path, secret)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range resp["results"].([]any) {
-			if m, ok := r.(map[string]any); ok {
-				all = append(all, m)
-			}
-		}
-		if hasMore, _ := resp["has_more"].(bool); !hasMore {
-			break
-		}
-		cursor, _ = resp["next_cursor"].(string)
-		if cursor == "" {
-			break
+// listBlockChildrenViaCLI runs list-block-children and returns the results as
+// parsed maps. It is used only by cleanupRoot; the per-test list test calls
+// the binary directly via runNotion to assert on raw output.
+func listBlockChildrenViaCLI(configPath, blockID string) ([]map[string]any, error) {
+	cmd := exec.Command(binaryPath, "-p", e2eProfile, "list-block-children", blockID, "--page-size", "100")
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		e2eConfigPathEnv + "=" + configPath,
+	}
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("list-block-children via cli: %w\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(stdout.String()), &data); err != nil {
+		return nil, fmt.Errorf("list-block-children: parse output: %w", err)
+	}
+	raw := asSlice(data["results"])
+	out := make([]map[string]any, 0, len(raw))
+	for _, r := range raw {
+		if m, ok := r.(map[string]any); ok {
+			out = append(out, m)
 		}
 	}
-	return all, nil
+	return out, nil
 }
 
-func archivePageAPI(secret, pageID string) error {
-	_, err := notionPatch("/v1/pages/"+pageID, secret, map[string]any{"archived": true})
-	return err
-}
-
-func archiveDatabaseAPI(secret, dbID string) error {
-	_, err := notionPatch("/v1/databases/"+dbID, secret, map[string]any{"archived": true})
-	return err
+// runNotionCmd is a thin subprocess runner used by the TestMain-time cleanup
+// path; it returns the first non-empty error message rather than aborting.
+func runNotionCmd(configPath string, args ...string) error {
+	full := append([]string{"-p", e2eProfile}, args...)
+	cmd := exec.Command(binaryPath, full...)
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		e2eConfigPathEnv + "=" + configPath,
+	}
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		return fmt.Errorf("%w: %s", err, msg)
+	}
+	return nil
 }
 
 // --- subprocess runner -----------------------------------------------------
@@ -393,7 +433,8 @@ func TestE2E_Help(t *testing.T) {
 	r := runNotion(t, "--help").mustSucceed(t)
 	for _, cmd := range []string{
 		"configure", "search", "fetch-page", "fetch-database", "fetch-data-source",
-		"query-data-source", "create-page", "move-page", "update-page",
+		"query-data-source", "create-page", "create-database", "list-block-children",
+		"move-page", "update-page", "trash-page", "trash-database", "trash-data-source",
 	} {
 		if !strings.Contains(r.stdout, cmd) {
 			t.Errorf("--help missing %q", cmd)
@@ -403,7 +444,11 @@ func TestE2E_Help(t *testing.T) {
 
 func TestE2E_SubcommandHelp(t *testing.T) {
 	setupE2E(t)
-	for _, sub := range []string{"search", "fetch-page", "create-page", "update-page", "move-page", "query-data-source"} {
+	for _, sub := range []string{
+		"search", "fetch-page", "create-page", "create-database", "list-block-children",
+		"update-page", "move-page", "query-data-source",
+		"trash-page", "trash-database", "trash-data-source",
+	} {
 		t.Run(sub, func(t *testing.T) {
 			r := runNotion(t, sub, "--help").mustSucceed(t)
 			if !strings.Contains(r.stdout, "Usage:") {
@@ -817,3 +862,141 @@ func TestE2E_UpdatePageOldNewReplaceAll(t *testing.T) {
 		t.Errorf("expected update_content mode, got: %s", r.stdout)
 	}
 }
+
+// --- create-database / list-block-children / trash-* (happy paths) ---------
+
+func TestE2E_CreateDatabase(t *testing.T) {
+	setupE2E(t)
+	title := fmt.Sprintf("e2e-create-db-%d", time.Now().UnixNano())
+	r := runNotion(t, "-p", e2eProfile, "create-database", title,
+		"--parent-page-id", rootPageID,
+	).mustSucceed(t)
+	var data map[string]any
+	if err := json.Unmarshal([]byte(r.stdout), &data); err != nil {
+		t.Fatalf("expected JSON, got: %s\nerr: %v", r.stdout, err)
+	}
+	if data["object"] != "database" {
+		t.Errorf("expected object=database, got: %v", data["object"])
+	}
+	if data["id"] == "" {
+		t.Errorf("expected id, got: %v", data["id"])
+	}
+	dss, ok := data["data_sources"].([]any)
+	if !ok || len(dss) == 0 {
+		t.Fatalf("expected data_sources array, got: %v", data["data_sources"])
+	}
+	first, _ := dss[0].(map[string]any)
+	if asString(first["id"]) == "" {
+		t.Errorf("expected data_sources[0].id, got: %v", first)
+	}
+}
+
+func TestE2E_ListBlockChildren(t *testing.T) {
+	setupE2E(t)
+	r := runNotion(t, "-p", e2eProfile, "list-block-children", rootPageID, "--page-size", "100").mustSucceed(t)
+	var data map[string]any
+	if err := json.Unmarshal([]byte(r.stdout), &data); err != nil {
+		t.Fatalf("expected JSON, got: %s\nerr: %v", r.stdout, err)
+	}
+	if data["object"] != "list" {
+		t.Errorf("expected object=list, got: %v", data["object"])
+	}
+	results, ok := data["results"].([]any)
+	if !ok {
+		t.Fatalf("expected results array, got: %T", data["results"])
+	}
+	// root is the e2e page; it always has at least the test database and scratch page.
+	if len(results) == 0 {
+		t.Errorf("expected non-empty results under root, got: %s", r.stdout)
+	}
+}
+
+func TestE2E_TrashPage(t *testing.T) {
+	setupE2E(t)
+	title := fmt.Sprintf("e2e-trash-page-%d", time.Now().UnixNano())
+	createR := runNotion(t, "-p", e2eProfile, "create-page", title,
+		"--parent-page-id", rootPageID,
+	).mustSucceed(t)
+	pageID := mustExtractIDFromMetadata(t, createR.stdout, "page_id")
+
+	r := runNotion(t, "-p", e2eProfile, "trash-page", pageID).mustSucceed(t)
+	if !strings.Contains(r.stdout, "Moved Page to Trash") {
+		t.Errorf("expected trash banner, got: %s", r.stdout)
+	}
+	if !strings.Contains(r.stdout, "in_trash: true") {
+		t.Errorf("expected in_trash: true in metadata, got: %s", r.stdout)
+	}
+	// A trashed page is still fetchable on Notion's API, but the in_trash flag
+	// is preserved on the resource; verify by re-fetching and checking it.
+	refetch := runNotion(t, "-p", e2eProfile, "fetch-page", pageID).mustSucceed(t)
+	if !strings.Contains(refetch.stdout, "page_id: "+pageID) {
+		t.Errorf("expected refetch to still return the page, got: %s", refetch.stdout)
+	}
+}
+
+func TestE2E_TrashDatabase(t *testing.T) {
+	setupE2E(t)
+	title := fmt.Sprintf("e2e-trash-db-%d", time.Now().UnixNano())
+	createR := runNotion(t, "-p", e2eProfile, "create-database", title,
+		"--parent-page-id", rootPageID,
+	).mustSucceed(t)
+	var data map[string]any
+	if err := json.Unmarshal([]byte(createR.stdout), &data); err != nil {
+		t.Fatalf("expected JSON, got: %s\nerr: %v", createR.stdout, err)
+	}
+	dbID := asString(data["id"])
+	if dbID == "" {
+		t.Fatalf("create-database response missing id: %s", createR.stdout)
+	}
+
+	r := runNotion(t, "-p", e2eProfile, "trash-database", dbID).mustSucceed(t)
+	if !strings.Contains(r.stdout, "Moved Database to Trash") {
+		t.Errorf("expected trash banner, got: %s", r.stdout)
+	}
+	if !strings.Contains(r.stdout, "in_trash: true") {
+		t.Errorf("expected in_trash: true in metadata, got: %s", r.stdout)
+	}
+	// A trashed database is still fetchable; verify the refetch succeeds.
+	refetch := runNotion(t, "-p", e2eProfile, "fetch-database", dbID).mustSucceed(t)
+	var refetched map[string]any
+	if err := json.Unmarshal([]byte(refetch.stdout), &refetched); err != nil {
+		t.Fatalf("expected JSON on refetch, got: %s", refetch.stdout)
+	}
+	if refetched["id"] != dbID {
+		t.Errorf("refetched id mismatch: got %v, want %s", refetched["id"], dbID)
+	}
+}
+
+func TestE2E_TrashDataSource(t *testing.T) {
+	setupE2E(t)
+	// Reuse the fixture test database; trash only its data source.
+	r := runNotion(t, "-p", e2eProfile, "trash-data-source", testDSID).mustSucceed(t)
+	if !strings.Contains(r.stdout, "Moved Data Source to Trash") {
+		t.Errorf("expected trash banner, got: %s", r.stdout)
+	}
+	if !strings.Contains(r.stdout, "in_trash: true") {
+		t.Errorf("expected in_trash: true in metadata, got: %s", r.stdout)
+	}
+	// A trashed data source is still fetchable; verify the refetch succeeds.
+	refetch := runNotion(t, "-p", e2eProfile, "fetch-data-source", testDSID).mustSucceed(t)
+	var refetched map[string]any
+	if err := json.Unmarshal([]byte(refetch.stdout), &refetched); err != nil {
+		t.Fatalf("expected JSON on refetch, got: %s", refetch.stdout)
+	}
+	if refetched["id"] != testDSID {
+		t.Errorf("refetched id mismatch: got %v, want %s", refetched["id"], testDSID)
+	}
+}
+
+// mustExtractIDFromMetadata pulls a `key: <uuid>` line out of a CLI metadata
+// block. The pattern is: `key: <id>` inside the `<!-- metadata ... -->` block.
+func mustExtractIDFromMetadata(t *testing.T, output, key string) string {
+	t.Helper()
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*([0-9a-fA-F-]{36})`)
+	m := re.FindStringSubmatch(output)
+	if len(m) < 2 {
+		t.Fatalf("no %s in output:\n%s", key, output)
+	}
+	return m[1]
+}
+

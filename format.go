@@ -271,6 +271,54 @@ func formatCreatePageOutput(pageData map[string]any) string {
 	return strings.Join(lines, "\n") + "\n\n---\n\n" + renderMetadataBlock(meta)
 }
 
+func formatTrashPageOutput(pageData map[string]any, pageID string) string {
+	pageID = ifEmpty(asString(pageData["id"]), pageID)
+	lines := []string{
+		"# 🗑️ Moved Page to Trash",
+		"- **Page ID:** " + pageID,
+	}
+	meta := []string{"page_id: " + pageID}
+	if inTrash, ok := pageData["in_trash"].(bool); ok {
+		meta = append(meta, fmt.Sprintf("in_trash: %t", inTrash))
+	}
+	if reqID := asString(pageData["request_id"]); reqID != "" {
+		meta = append(meta, "request_id: "+reqID)
+	}
+	return strings.Join(lines, "\n") + "\n\n---\n\n" + renderMetadataBlock(meta)
+}
+
+func formatTrashDatabaseOutput(dbData map[string]any, dbID string) string {
+	dbID = ifEmpty(asString(dbData["id"]), dbID)
+	lines := []string{
+		"# 🗑️ Moved Database to Trash",
+		"- **Database ID:** " + dbID,
+	}
+	meta := []string{"database_id: " + dbID}
+	if inTrash, ok := dbData["in_trash"].(bool); ok {
+		meta = append(meta, fmt.Sprintf("in_trash: %t", inTrash))
+	}
+	if reqID := asString(dbData["request_id"]); reqID != "" {
+		meta = append(meta, "request_id: "+reqID)
+	}
+	return strings.Join(lines, "\n") + "\n\n---\n\n" + renderMetadataBlock(meta)
+}
+
+func formatTrashDataSourceOutput(dsData map[string]any, dsID string) string {
+	dsID = ifEmpty(asString(dsData["id"]), dsID)
+	lines := []string{
+		"# 🗑️ Moved Data Source to Trash",
+		"- **Data Source ID:** " + dsID,
+	}
+	meta := []string{"data_source_id: " + dsID}
+	if inTrash, ok := dsData["in_trash"].(bool); ok {
+		meta = append(meta, fmt.Sprintf("in_trash: %t", inTrash))
+	}
+	if reqID := asString(dsData["request_id"]); reqID != "" {
+		meta = append(meta, "request_id: "+reqID)
+	}
+	return strings.Join(lines, "\n") + "\n\n---\n\n" + renderMetadataBlock(meta)
+}
+
 func formatMovePageOutput(pageData, parent map[string]any) string {
 	title := extractTitle(pageData)
 	url := asString(pageData["url"])

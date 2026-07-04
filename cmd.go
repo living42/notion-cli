@@ -226,6 +226,181 @@ func cmdMovePage(profile, pageID, parentPageID, parentDataSourceID string) error
 	return nil
 }
 
+func cmdCreateDatabase(profile, title, parentPageID, propertiesRaw string) error {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return err
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return cliError{"Title cannot be empty."}
+	}
+	if strings.TrimSpace(parentPageID) == "" {
+		return cliError{"create-database requires --parent-page-id."}
+	}
+	normParentID, err := normalizeNotionID(parentPageID, "page")
+	if err != nil {
+		return err
+	}
+
+	properties := map[string]any{
+		"Name": map[string]any{"title": map[string]any{}},
+	}
+	if strings.TrimSpace(propertiesRaw) != "" {
+		parsed, err := parseJSONOption(propertiesRaw, "object", "--properties")
+		if err != nil {
+			return err
+		}
+		properties = asMap(parsed)
+	}
+
+	body := map[string]any{
+		"parent":     map[string]any{"type": "page_id", "page_id": normParentID},
+		"title":      []any{map[string]any{"text": map[string]any{"content": title}}},
+		"properties": properties,
+	}
+
+	resp, err := notionPost("/v1/databases", secret, body)
+	if err != nil {
+		return err
+	}
+	if firstDataSourceID(resp) == "" {
+		// Some server versions only attach data sources after a follow-up read.
+		dbID := asString(resp["id"])
+		if dbID != "" {
+			refetched, err := notionGet("/v1/databases/"+dbID, secret)
+			if err == nil {
+				resp = refetched
+			}
+		}
+	}
+	printPrettyJSON(resp)
+	return nil
+}
+
+func firstDataSourceID(obj map[string]any) string {
+	dss, ok := obj["data_sources"].([]any)
+	if !ok || len(dss) == 0 {
+		return ""
+	}
+	first, ok := dss[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return asString(first["id"])
+}
+
+func cmdListBlockChildren(profile, blockID string, pageSize int, startCursor string) error {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return err
+	}
+	normID, err := normalizeNotionID(blockID, "block")
+	if err != nil {
+		return err
+	}
+	if _, err := validatePageSize(pageSize); err != nil {
+		return err
+	}
+
+	all := make([]any, 0)
+	cursor := startCursor
+	var hasMore bool
+	var nextCursor, requestID string
+
+	for {
+		path := "/v1/blocks/" + normID + "/children"
+		query := ""
+		if cursor != "" {
+			query = "start_cursor=" + cursor
+		}
+		if query != "" {
+			path += "?" + query
+		}
+		resp, err := notionGet(path, secret)
+		if err != nil {
+			return err
+		}
+		results := asSlice(resp["results"])
+		all = append(all, results...)
+		hasMore, _ = resp["has_more"].(bool)
+		nextCursor = asString(resp["next_cursor"])
+		requestID = asString(resp["request_id"])
+		if !hasMore || nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	out := map[string]any{
+		"object":    "list",
+		"results":   all,
+		"has_more":  hasMore,
+		"next_cursor": func() any {
+			if nextCursor == "" {
+				return nil
+			}
+			return nextCursor
+		}(),
+	}
+	if requestID != "" {
+		out["request_id"] = requestID
+	}
+	printPrettyJSON(out)
+	return nil
+}
+
+func cmdTrashPage(profile, pageID string) error {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return err
+	}
+	normPageID, err := normalizeNotionID(pageID, "page")
+	if err != nil {
+		return err
+	}
+	resp, err := notionPatch("/v1/pages/"+normPageID, secret, map[string]any{"in_trash": true})
+	if err != nil {
+		return err
+	}
+	fmt.Println(formatTrashPageOutput(resp, normPageID))
+	return nil
+}
+
+func cmdTrashDatabase(profile, databaseID string) error {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return err
+	}
+	normID, err := normalizeNotionID(databaseID, "database")
+	if err != nil {
+		return err
+	}
+	resp, err := notionPatch("/v1/databases/"+normID, secret, map[string]any{"in_trash": true})
+	if err != nil {
+		return err
+	}
+	fmt.Println(formatTrashDatabaseOutput(resp, normID))
+	return nil
+}
+
+func cmdTrashDataSource(profile, dataSourceID string) error {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return err
+	}
+	normID, err := normalizeNotionID(dataSourceID, "data source")
+	if err != nil {
+		return err
+	}
+	resp, err := notionPatch("/v1/data_sources/"+normID, secret, map[string]any{"in_trash": true})
+	if err != nil {
+		return err
+	}
+	fmt.Println(formatTrashDataSourceOutput(resp, normID))
+	return nil
+}
+
 func normalizeProfileArgs(argv []string) []string {
 	normalized := make([]string, 0, len(argv))
 	profileValue := ""
@@ -259,7 +434,7 @@ func NewCommand() *cobra.Command {
 
 	rootCmd := &cobra.Command{
 		Use:           "notion",
-		Short:         "Lightweight Notion CLI for searching, reading, creating, moving, and updating pages, databases, and data sources.",
+		Short:         "Lightweight Notion CLI for searching, reading, creating, moving, updating, and trashing pages, databases, and data sources.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -371,6 +546,61 @@ func NewCommand() *cobra.Command {
 	createPageCmd.Flags().StringVar(&createContent, "content", "", "")
 	createPageCmd.Flags().StringVar(&createContentFile, "content-file", "", "")
 
+	var createDatabaseParentPageID string
+	var createDatabaseProperties string
+	createDatabaseCmd := &cobra.Command{
+		Use:   "create-database TITLE",
+		Short: "Create a new Notion database",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdCreateDatabase(profile, args[0], createDatabaseParentPageID, createDatabaseProperties)
+		},
+	}
+	createDatabaseCmd.Flags().StringVar(&createDatabaseParentPageID, "parent-page-id", "", "")
+	createDatabaseCmd.Flags().StringVar(&createDatabaseProperties, "properties", "", "")
+
+	var (
+		listChildrenPageSize    int
+		listChildrenStartCursor string
+	)
+	listBlockChildrenCmd := &cobra.Command{
+		Use:   "list-block-children BLOCK_ID",
+		Short: "List the children of a Notion block or page",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdListBlockChildren(profile, args[0], listChildrenPageSize, listChildrenStartCursor)
+		},
+	}
+	listBlockChildrenCmd.Flags().IntVar(&listChildrenPageSize, "page-size", 100, "")
+	listBlockChildrenCmd.Flags().StringVar(&listChildrenStartCursor, "start-cursor", "", "")
+
+	trashPageCmd := &cobra.Command{
+		Use:   "trash-page PAGE_ID",
+		Short: "Move a Notion page to trash",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdTrashPage(profile, args[0])
+		},
+	}
+
+	trashDatabaseCmd := &cobra.Command{
+		Use:   "trash-database DATABASE_ID",
+		Short: "Move a Notion database to trash",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdTrashDatabase(profile, args[0])
+		},
+	}
+
+	trashDataSourceCmd := &cobra.Command{
+		Use:   "trash-data-source DATA_SOURCE_ID",
+		Short: "Move a Notion data source to trash",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdTrashDataSource(profile, args[0])
+		},
+	}
+
 	var (
 		moveParentPageID       string
 		moveParentDataSourceID string
@@ -424,8 +654,13 @@ func NewCommand() *cobra.Command {
 		fetchDataSourceCmd,
 		queryDataSourceCmd,
 		createPageCmd,
+		createDatabaseCmd,
+		listBlockChildrenCmd,
 		movePageCmd,
 		updatePageCmd,
+		trashPageCmd,
+		trashDatabaseCmd,
+		trashDataSourceCmd,
 	)
 
 	return rootCmd

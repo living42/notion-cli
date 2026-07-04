@@ -7,12 +7,14 @@ A lightweight, zero-setup command-line tool to search, read, create, move, and u
 ## Features
 
 - **One-liner installation** — A single `curl | bash` downloads a pre-built binary for your platform. No toolchain required.
-- **Readable Markdown output** — `search`, `fetch-page`, `create-page`, `move-page`, and `update-page` produce compact Markdown output.
-- **Database + data source support** — Fetch databases, fetch data sources, and query data sources.
-- **Pretty JSON where it helps** — `fetch-database`, `fetch-data-source`, and `query-data-source` return pretty-printed JSON.
+- **Readable Markdown output** — `search`, `fetch-page`, `create-page`, `move-page`, `update-page`, and `trash-*` produce compact Markdown output.
+- **Database + data source support** — Create and fetch databases, fetch data sources, query data sources, list block children, and trash any of them.
+- **Pretty JSON where it helps** — `fetch-database`, `fetch-data-source`, `query-data-source`, and `list-block-children` return pretty-printed JSON.
 - **Page creation** — Create child pages from inline Markdown, files, or stdin.
+- **Database creation** — Create databases with a custom property schema.
 - **Page moves** — Move an existing page under a different parent page or data source.
 - **Page content updates** — Search-and-replace or fully replace page markdown.
+- **Move to Trash** — Soft-delete pages, databases, and data sources via the `in_trash` API field, mirroring Notion's "Move to Trash" UI verb.
 - **Multi-profile config** — Use different Notion tokens with `-p/--profile`.
 - **Pagination support** — Walk through large result sets with cursors.
 - **Slice large pages** — View only the lines you need with `fetch-page --slice`.
@@ -146,6 +148,35 @@ notion query-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab --page-size 20
 
 These commands print pretty JSON.
 
+### 8. Create a database
+
+```bash
+notion create-database "Project Tracker" --parent-page-id abc123def456abc123def456abc123de
+notion create-database "Custom" \
+  --parent-page-id abc123def456abc123def456abc123de \
+  --properties '{"Name":{"title":{}},"Status":{"select":{"options":[{"name":"Open"},{"name":"Done"}]}}}'
+```
+
+The response is the new database as pretty JSON, including its default data source ID under `data_sources[0].id`.
+
+### 9. List block children
+
+```bash
+notion list-block-children abc123def456abc123def456abc123de --page-size 50
+```
+
+Output is pretty JSON with a `results` array, mirroring the Notion response shape. Use `--start-cursor` to paginate.
+
+### 10. Move to Trash
+
+```bash
+notion trash-page 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
+notion trash-database 2f0f7f20-5d8b-4a1a-bf88-8f5fa9cfaa10
+notion trash-data-source 1d2e3f44-aaaa-bbbb-cccc-1234567890ab
+```
+
+Each command PATCHes the resource with `in_trash: true`, mirroring Notion's "Move to Trash" UI verb. Trashed resources remain fetchable but are flagged `in_trash` and `archived` on subsequent reads; restore them via the Notion UI or by PATCHing `in_trash: false`.
+
 ---
 
 ## Commands Reference
@@ -261,6 +292,40 @@ Query a data source and print pretty JSON.
 | `--in-trash` | `false` | Include trashed entries |
 | `--result-type TYPE` | _(none)_ | Optional Notion `result_type` |
 
+### `notion create-database TITLE --parent-page-id UUID [OPTIONS]`
+
+Create a new database under a page parent. The response is the new database as pretty JSON, including the default data source ID under `data_sources[0].id`.
+
+| Option | Description |
+|---|---|
+| `TITLE` | Title of the new database |
+| `--parent-page-id UUID` | Parent page ID (required) |
+| `--properties JSON` | Notion properties schema; default `{"Name":{"title":{}}}` |
+
+### `notion list-block-children BLOCK_ID [OPTIONS]`
+
+List the direct children of a block or page and print pretty JSON. Internally paginates the Notion response.
+
+| Option | Default | Description |
+|---|---|---|
+| `-p, --profile PROFILE` | `default` | Config profile to use |
+| `--page-size N` | `100` | Page size (1–100) |
+| `--start-cursor UUID` | _(none)_ | Pagination cursor |
+
+### `notion trash-page PAGE_ID`
+
+Move a page to trash. PATCHes `/v1/pages/{id}` with `in_trash: true`.
+
+### `notion trash-database DATABASE_ID`
+
+Move a database to trash. PATCHes `/v1/databases/{id}` with `in_trash: true`. Trashing a database also trashes its data sources.
+
+### `notion trash-data-source DATA_SOURCE_ID`
+
+Move a data source to trash. PATCHes `/v1/data_sources/{id}` with `in_trash: true`.
+
+> The three `trash-*` commands mirror Notion's "Move to Trash" UI verb. Trashed resources remain fetchable but are flagged `in_trash` and `archived` on subsequent reads; restore them via the Notion UI or by PATCHing `in_trash: false`.
+
 ---
 
 ## Troubleshooting
@@ -275,7 +340,7 @@ Run `notion configure -p work`.
 Your secret is invalid or expired. Re-run `notion configure`.
 
 **"Error 403: restricted_resource"**
-Your integration may be missing the required Notion capability. Use **Insert Content** for `create-page`, **Update Content** for `update-page`, and ensure your integration can edit/move pages for `move-page`.
+Your integration may be missing the required Notion capability. Use **Insert Content** for `create-page`, **Update Content** for `update-page`, and ensure your integration can edit/move pages for `move-page`. Trash operations require the integration to have access to the target resource.
 
 **"Error 404: Not found"**
 Check the ID and make sure your integration has access.
@@ -305,12 +370,12 @@ Legacy single-secret configs are also accepted and will continue to work.
 
 ## Limitations
 
-This tool supports searching, reading, creating child pages, moving pages between parent pages/data sources, updating page markdown, and read-only inspection of databases and data sources. It does not:
+This tool supports searching, reading, creating child pages and databases, moving pages between parent pages/data sources, updating page markdown, listing block children, trashing pages/databases/data sources, and read-only inspection of databases and data sources. It does not:
 
-- Create workspace-level pages
-- Create pages under databases or data sources
-- Manage arbitrary page properties
+- Create workspace-level pages or databases
+- Manage arbitrary page properties beyond database creation
 - Perform general block-level CRUD outside the page-markdown endpoint
+- Restore trashed resources (use the Notion UI)
 - Use OAuth
 
 ---
