@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 const notionVersion = "2025-09-03"
@@ -1052,190 +1053,181 @@ func normalizeProfileArgs(argv []string) []string {
 	return normalized
 }
 
-type stringSliceFlag []string
-
-func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
-func (s *stringSliceFlag) Set(v string) error {
-	*s = append(*s, v)
-	return nil
-}
-
-func globalUsage() {
-	fmt.Println(`usage: notion [-h] [-p PROFILE] <command> ...
-       notion -v | --version
-
-Lightweight Notion CLI for searching, reading, creating, moving, and updating
-pages, databases, and data sources.
-
-commands:
-  configure
-  search
-  fetch-page
-  fetch-database
-  fetch-data-source
-  query-data-source
-  create-page
-  move-page
-  update-page`)
-}
-
-func run(argv []string) error {
-	normalized := normalizeProfileArgs(argv)
-	global := flag.NewFlagSet("notion", flag.ContinueOnError)
-	global.SetOutput(io.Discard)
-	profile := global.String("profile", "default", "")
-	global.StringVar(profile, "p", "default", "")
-	showVersion := global.Bool("version", false, "")
-	global.BoolVar(showVersion, "v", false, "")
-	if err := global.Parse(normalized); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			globalUsage()
-			return nil
-		}
-		return err
-	}
-	if *showVersion {
-		fmt.Printf("notion version %s\n", version)
-		return nil
-	}
-	args := global.Args()
-	if len(args) == 0 {
-		globalUsage()
-		return nil
-	}
-	cmd := args[0]
-
-	switch cmd {
-	case "configure":
-		fs := flag.NewFlagSet("configure", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		return cmdConfigure(*profile)
-	case "search":
-		fs := flag.NewFlagSet("search", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		sortTimestamp := fs.String("sort-timestamp", "last_edited_time", "")
-		sortDirection := fs.String("sort-direction", "descending", "")
-		startCursor := fs.String("start-cursor", "", "")
-		pageSize := fs.Int("page-size", 10, "")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		query := ""
-		if fs.NArg() > 0 {
-			query = fs.Arg(0)
-		}
-		if *sortDirection != "ascending" && *sortDirection != "descending" {
-			return cliError{"--sort-direction must be one of: ascending, descending."}
-		}
-		return cmdSearch(*profile, query, *sortTimestamp, *sortDirection, *startCursor, *pageSize)
-	case "fetch-page":
-		fs := flag.NewFlagSet("fetch-page", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		slice := fs.String("slice", "", "")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if fs.NArg() < 1 {
-			return cliError{"fetch-page requires PAGE_ID."}
-		}
-		return cmdFetchPage(*profile, fs.Arg(0), *slice)
-	case "fetch-database":
-		fs := flag.NewFlagSet("fetch-database", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if fs.NArg() < 1 {
-			return cliError{"fetch-database requires DATABASE_ID."}
-		}
-		return cmdFetchDatabase(*profile, fs.Arg(0))
-	case "fetch-data-source":
-		fs := flag.NewFlagSet("fetch-data-source", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if fs.NArg() < 1 {
-			return cliError{"fetch-data-source requires DATA_SOURCE_ID."}
-		}
-		return cmdFetchDataSource(*profile, fs.Arg(0))
-	case "query-data-source":
-		fs := flag.NewFlagSet("query-data-source", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		sorts := fs.String("sorts", "", "")
-		filter := fs.String("filter", "", "")
-		startCursor := fs.String("start-cursor", "", "")
-		pageSize := fs.Int("page-size", 10, "")
-		inTrash := fs.Bool("in-trash", false, "")
-		resultType := fs.String("result-type", "", "")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if fs.NArg() < 1 {
-			return cliError{"query-data-source requires DATA_SOURCE_ID."}
-		}
-		return cmdQueryDataSource(*profile, fs.Arg(0), *sorts, *filter, *startCursor, *pageSize, *inTrash, *resultType)
-	case "create-page":
-		fs := flag.NewFlagSet("create-page", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		parentPageID := fs.String("parent-page-id", "", "")
-		parentDataSourceID := fs.String("parent-data-source-id", "", "")
-		content := fs.String("content", "", "")
-		contentFile := fs.String("content-file", "", "")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if fs.NArg() < 1 {
-			return cliError{"create-page requires TITLE."}
-		}
-		return cmdCreatePage(*profile, fs.Arg(0), *parentPageID, *parentDataSourceID, *content, *contentFile)
-	case "move-page":
-		fs := flag.NewFlagSet("move-page", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		parentPageID := fs.String("parent-page-id", "", "")
-		parentDataSourceID := fs.String("parent-data-source-id", "", "")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if fs.NArg() < 1 {
-			return cliError{"move-page requires PAGE_ID."}
-		}
-		hasPage := strings.TrimSpace(*parentPageID) != ""
-		hasDataSource := strings.TrimSpace(*parentDataSourceID) != ""
-		if hasPage == hasDataSource {
-			return cliError{"move-page requires exactly one of --parent-page-id or --parent-data-source-id."}
-		}
-		return cmdMovePage(*profile, fs.Arg(0), *parentPageID, *parentDataSourceID)
-	case "update-page":
-		fs := flag.NewFlagSet("update-page", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		replace := fs.Bool("replace", false, "")
-		content := fs.String("content", "", "")
-		contentFile := fs.String("content-file", "", "")
-		replaceAll := fs.Bool("replace-all-matches", false, "")
-		allowDeleting := fs.Bool("allow-deleting-content", false, "")
-		var olds stringSliceFlag
-		var news stringSliceFlag
-		fs.Var(&olds, "old", "")
-		fs.Var(&news, "new", "")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if fs.NArg() < 1 {
-			return cliError{"update-page requires PAGE_ID."}
-		}
-		return cmdUpdatePage(*profile, fs.Arg(0), *replace, *content, *contentFile, []string(olds), []string(news), *replaceAll, *allowDeleting)
-	default:
-		globalUsage()
-		return nil
-	}
-}
-
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	var profile string
+
+	rootCmd := &cobra.Command{
+		Use:   "notion",
+		Short: "Lightweight Notion CLI for searching, reading, creating, moving, and updating pages, databases, and data sources.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	rootCmd.Version = version
+	rootCmd.SetVersionTemplate("notion version {{.Version}}\n")
+	rootCmd.PersistentFlags().StringVarP(&profile, "profile", "p", "default", "Profile to use")
+
+	configureCmd := &cobra.Command{
+		Use:   "configure",
+		Short: "Configure a Notion profile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdConfigure(profile)
+		},
+	}
+
+	var (
+		searchSortTimestamp string
+		searchSortDirection string
+		searchStartCursor   string
+		searchPageSize      int
+	)
+	searchCmd := &cobra.Command{
+		Use:   "search [QUERY]",
+		Short: "Search Notion",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := ""
+			if len(args) > 0 {
+				query = args[0]
+			}
+			if searchSortDirection != "ascending" && searchSortDirection != "descending" {
+				return cliError{"--sort-direction must be one of: ascending, descending."}
+			}
+			return cmdSearch(profile, query, searchSortTimestamp, searchSortDirection, searchStartCursor, searchPageSize)
+		},
+	}
+	searchCmd.Flags().StringVar(&searchSortTimestamp, "sort-timestamp", "last_edited_time", "")
+	searchCmd.Flags().StringVar(&searchSortDirection, "sort-direction", "descending", "")
+	searchCmd.Flags().StringVar(&searchStartCursor, "start-cursor", "", "")
+	searchCmd.Flags().IntVar(&searchPageSize, "page-size", 10, "")
+
+	var fetchSlice string
+	fetchPageCmd := &cobra.Command{
+		Use:   "fetch-page PAGE_ID",
+		Short: "Fetch a Notion page",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdFetchPage(profile, args[0], fetchSlice)
+		},
+	}
+	fetchPageCmd.Flags().StringVar(&fetchSlice, "slice", "", "")
+
+	fetchDatabaseCmd := &cobra.Command{
+		Use:   "fetch-database DATABASE_ID",
+		Short: "Fetch a Notion database",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdFetchDatabase(profile, args[0])
+		},
+	}
+
+	fetchDataSourceCmd := &cobra.Command{
+		Use:   "fetch-data-source DATA_SOURCE_ID",
+		Short: "Fetch a Notion data source",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdFetchDataSource(profile, args[0])
+		},
+	}
+
+	var (
+		querySorts      string
+		queryFilter     string
+		queryCursor     string
+		queryPageSize   int
+		queryInTrash    bool
+		queryResultType string
+	)
+	queryDataSourceCmd := &cobra.Command{
+		Use:   "query-data-source DATA_SOURCE_ID",
+		Short: "Query a Notion data source",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdQueryDataSource(profile, args[0], querySorts, queryFilter, queryCursor, queryPageSize, queryInTrash, queryResultType)
+		},
+	}
+	queryDataSourceCmd.Flags().StringVar(&querySorts, "sorts", "", "")
+	queryDataSourceCmd.Flags().StringVar(&queryFilter, "filter", "", "")
+	queryDataSourceCmd.Flags().StringVar(&queryCursor, "start-cursor", "", "")
+	queryDataSourceCmd.Flags().IntVar(&queryPageSize, "page-size", 10, "")
+	queryDataSourceCmd.Flags().BoolVar(&queryInTrash, "in-trash", false, "")
+	queryDataSourceCmd.Flags().StringVar(&queryResultType, "result-type", "", "")
+
+	var (
+		createParentPageID       string
+		createParentDataSourceID string
+		createContent            string
+		createContentFile        string
+	)
+	createPageCmd := &cobra.Command{
+		Use:   "create-page TITLE",
+		Short: "Create a new Notion page",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdCreatePage(profile, args[0], createParentPageID, createParentDataSourceID, createContent, createContentFile)
+		},
+	}
+	createPageCmd.Flags().StringVar(&createParentPageID, "parent-page-id", "", "")
+	createPageCmd.Flags().StringVar(&createParentDataSourceID, "parent-data-source-id", "", "")
+	createPageCmd.Flags().StringVar(&createContent, "content", "", "")
+	createPageCmd.Flags().StringVar(&createContentFile, "content-file", "", "")
+
+	var (
+		moveParentPageID       string
+		moveParentDataSourceID string
+	)
+	movePageCmd := &cobra.Command{
+		Use:   "move-page PAGE_ID",
+		Short: "Move a Notion page",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			hasPage := strings.TrimSpace(moveParentPageID) != ""
+			hasDataSource := strings.TrimSpace(moveParentDataSourceID) != ""
+			if hasPage == hasDataSource {
+				return cliError{"move-page requires exactly one of --parent-page-id or --parent-data-source-id."}
+			}
+			return cmdMovePage(profile, args[0], moveParentPageID, moveParentDataSourceID)
+		},
+	}
+	movePageCmd.Flags().StringVar(&moveParentPageID, "parent-page-id", "", "")
+	movePageCmd.Flags().StringVar(&moveParentDataSourceID, "parent-data-source-id", "", "")
+
+	var (
+		updateReplace       bool
+		updateContent       string
+		updateContentFile   string
+		updateReplaceAll    bool
+		updateAllowDeleting bool
+		updateOlds          []string
+		updateNews          []string
+	)
+	updatePageCmd := &cobra.Command{
+		Use:   "update-page PAGE_ID",
+		Short: "Update a Notion page",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdUpdatePage(profile, args[0], updateReplace, updateContent, updateContentFile, updateOlds, updateNews, updateReplaceAll, updateAllowDeleting)
+		},
+	}
+	updatePageCmd.Flags().BoolVar(&updateReplace, "replace", false, "")
+	updatePageCmd.Flags().StringVar(&updateContent, "content", "", "")
+	updatePageCmd.Flags().StringVar(&updateContentFile, "content-file", "", "")
+	updatePageCmd.Flags().BoolVar(&updateReplaceAll, "replace-all-matches", false, "")
+	updatePageCmd.Flags().BoolVar(&updateAllowDeleting, "allow-deleting-content", false, "")
+	updatePageCmd.Flags().StringArrayVar(&updateOlds, "old", nil, "")
+	updatePageCmd.Flags().StringArrayVar(&updateNews, "new", nil, "")
+
+	rootCmd.AddCommand(
+		configureCmd,
+		searchCmd,
+		fetchPageCmd,
+		fetchDatabaseCmd,
+		fetchDataSourceCmd,
+		queryDataSourceCmd,
+		createPageCmd,
+		movePageCmd,
+		updatePageCmd,
+	)
+
+	if err := rootCmd.Execute(); err != nil {
 		failf("%s", err)
 	}
 }
