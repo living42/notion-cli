@@ -7,13 +7,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func cmdSearch(profile, query, sortTimestamp, sortDirection, startCursor string, pageSize int) error {
+// --- command handlers ------------------------------------------------------
+//
+// Each cmdXxx returns the output to print (and an error). The cobra RunE
+// wrappers do the actual fmt.Println so handlers stay testable in-process
+// (integration tests call them directly against an httptest server).
+
+func cmdFind(profile, query, sortTimestamp, sortDirection, startCursor string, pageSize int, long, jsonOut bool) (string, error) {
 	secret, err := selectedSecret(profile)
 	if err != nil {
-		return err
+		return "", err
+	}
+	if sortDirection != "ascending" && sortDirection != "descending" {
+		return "", cliError{"--sort-direction must be one of: ascending, descending."}
 	}
 	if _, err := validatePageSize(pageSize); err != nil {
-		return err
+		return "", err
 	}
 	body := map[string]any{}
 	if query != "" {
@@ -29,297 +38,59 @@ func cmdSearch(profile, query, sortTimestamp, sortDirection, startCursor string,
 
 	result, err := notionPost("/v1/search", secret, body)
 	if err != nil {
-		return err
+		return "", err
 	}
-	fmt.Println(formatSearchOutput(result))
-	return nil
+	if jsonOut {
+		return prettyJSON(result), nil
+	}
+	if long {
+		return formatSearchOutput(result), nil
+	}
+	return formatFindCompact(result), nil
 }
 
-func cmdFetchPage(profile, pageID, sliceRaw string) error {
+func cmdLs(profile, ref string, long, jsonOut bool, pageSize int, startCursor, filterRaw, sortsRaw string, inTrash bool, resultType string) (string, error) {
 	secret, err := selectedSecret(profile)
 	if err != nil {
-		return err
+		return "", err
 	}
-	normPageID, err := normalizeNotionID(pageID, "page")
+	kind, normID, err := parseResourceRef(ref)
 	if err != nil {
-		return err
-	}
-	pageMeta, err := notionGet("/v1/pages/"+normPageID, secret)
-	if err != nil {
-		return err
-	}
-	data, err := notionGet("/v1/pages/"+normPageID+"/markdown", secret)
-	if err != nil {
-		return err
-	}
-	var sliceRange *[2]int
-	if strings.TrimSpace(sliceRaw) != "" {
-		v, err := parseSlice(sliceRaw)
-		if err != nil {
-			return err
-		}
-		sliceRange = &v
-	}
-	fmt.Println(formatFetchOutput(data, pageMeta, sliceRange))
-	return nil
-}
-
-func cmdFetchDatabase(profile, databaseID string) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
-	}
-	normID, err := normalizeNotionID(databaseID, "database")
-	if err != nil {
-		return err
-	}
-	data, err := notionGet("/v1/databases/"+normID, secret)
-	if err != nil {
-		return err
-	}
-	printPrettyJSON(data)
-	return nil
-}
-
-func cmdFetchDataSource(profile, dataSourceID string) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
-	}
-	normID, err := normalizeNotionID(dataSourceID, "data source")
-	if err != nil {
-		return err
-	}
-	data, err := notionGet("/v1/data_sources/"+normID, secret)
-	if err != nil {
-		return err
-	}
-	printPrettyJSON(data)
-	return nil
-}
-
-func cmdQueryDataSource(profile, dataSourceID, sortsRaw, filterRaw, startCursor string, pageSize int, inTrash bool, resultType string) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
-	}
-	normID, err := normalizeNotionID(dataSourceID, "data source")
-	if err != nil {
-		return err
+		return "", err
 	}
 	if _, err := validatePageSize(pageSize); err != nil {
-		return err
+		return "", err
 	}
-	payload := map[string]any{}
-	if sortsRaw != "" {
-		sorts, err := parseJSONOption(sortsRaw, "array", "--sorts")
-		if err != nil {
-			return err
-		}
-		payload["sorts"] = sorts
+	if (filterRaw != "" || sortsRaw != "") && kind != "data_source" {
+		return "", cliError{"--filter/--sorts are only valid for data sources (use: ls ds:<id>)."}
 	}
-	if filterRaw != "" {
-		filter, err := parseJSONOption(filterRaw, "object", "--filter")
-		if err != nil {
-			return err
-		}
-		payload["filter"] = filter
+	switch kind {
+	case "page":
+		return lsPage(secret, normID, long, jsonOut, pageSize, startCursor)
+	case "database":
+		return lsDatabase(secret, normID, long, jsonOut)
+	case "data_source":
+		return lsDataSource(secret, normID, long, jsonOut, pageSize, startCursor, filterRaw, sortsRaw, inTrash, resultType)
 	}
-	if startCursor != "" {
-		payload["start_cursor"] = startCursor
-	}
-	payload["page_size"] = pageSize
-	if inTrash {
-		payload["in_trash"] = true
-	}
-	if resultType != "" {
-		payload["result_type"] = resultType
-	}
-	resp, err := notionPost("/v1/data_sources/"+normID+"/query", secret, payload)
-	if err != nil {
-		return err
-	}
-	printPrettyJSON(resp)
-	return nil
+	return "", cliError{"unsupported resource type: " + kind}
 }
 
-func cmdUpdatePage(profile, pageID string, replace bool, content, contentFile string, olds, news []string, replaceAll, allowDeleting bool) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
-	}
-	normPageID, err := normalizeNotionID(pageID, "page")
-	if err != nil {
-		return err
-	}
-	mode, body, err := buildUpdatePageBody(replace, content, contentFile, olds, news, replaceAll, allowDeleting)
-	if err != nil {
-		return err
-	}
-	updateData, err := notionPatch("/v1/pages/"+normPageID+"/markdown", secret, body)
-	if err != nil {
-		return err
-	}
-	pageMeta, err := notionGet("/v1/pages/"+normPageID, secret)
-	if err != nil {
-		return err
-	}
-	fmt.Println(formatUpdatePageOutput(updateData, pageMeta, mode))
-	return nil
-}
-
-func cmdCreatePage(profile, title, parentPageID, parentDataSourceID, content, contentFile string) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
-	}
-	// Validate the parent choice up front; otherwise we'd issue a real API
-	// request with a fake ID when the user passes both flags.
-	if hasPage := strings.TrimSpace(parentPageID) != ""; hasPage == (strings.TrimSpace(parentDataSourceID) != "") {
-		return cliError{"create-page requires exactly one of --parent-page-id or --parent-data-source-id (not both, not neither)."}
-	}
-	titleProp := ""
-	if parentDataSourceID != "" {
-		normDSID, err := normalizeNotionID(parentDataSourceID, "data source")
-		if err != nil {
-			return err
-		}
-		dataSource, err := notionGet("/v1/data_sources/"+normDSID, secret)
-		if err != nil {
-			return err
-		}
-		titleProp, err = extractTitlePropertyName(dataSource)
-		if err != nil {
-			return err
-		}
-	}
-	body, err := buildCreatePageBody(title, parentPageID, parentDataSourceID, content, contentFile, titleProp)
-	if err != nil {
-		return err
-	}
-	pageData, err := notionPost("/v1/pages", secret, body)
-	if err != nil {
-		return err
-	}
-	fmt.Println(formatCreatePageOutput(pageData))
-	return nil
-}
-
-func cmdMovePage(profile, pageID, parentPageID, parentDataSourceID string) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
-	}
-	normPageID, err := normalizeNotionID(pageID, "page")
-	if err != nil {
-		return err
-	}
-	parent, body, err := buildMovePageBody(parentPageID, parentDataSourceID, normPageID)
-	if err != nil {
-		return err
-	}
-	pageData, err := notionPatch("/v1/pages/"+normPageID, secret, body)
-	if err != nil {
-		return err
-	}
-	fmt.Println(formatMovePageOutput(pageData, parent))
-	return nil
-}
-
-func cmdCreateDatabase(profile, title, parentPageID, propertiesRaw string) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
-	}
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return cliError{"Title cannot be empty."}
-	}
-	if strings.TrimSpace(parentPageID) == "" {
-		return cliError{"create-database requires --parent-page-id."}
-	}
-	normParentID, err := normalizeNotionID(parentPageID, "page")
-	if err != nil {
-		return err
-	}
-
-	properties := map[string]any{
-		"Name": map[string]any{"title": map[string]any{}},
-	}
-	if strings.TrimSpace(propertiesRaw) != "" {
-		parsed, err := parseJSONOption(propertiesRaw, "object", "--properties")
-		if err != nil {
-			return err
-		}
-		properties = asMap(parsed)
-	}
-
-	body := map[string]any{
-		"parent":     map[string]any{"type": "page_id", "page_id": normParentID},
-		"title":      []any{map[string]any{"text": map[string]any{"content": title}}},
-		"properties": properties,
-	}
-
-	resp, err := notionPost("/v1/databases", secret, body)
-	if err != nil {
-		return err
-	}
-	if firstDataSourceID(resp) == "" {
-		// Some server versions only attach data sources after a follow-up read.
-		dbID := asString(resp["id"])
-		if dbID != "" {
-			refetched, err := notionGet("/v1/databases/"+dbID, secret)
-			if err == nil {
-				resp = refetched
-			}
-		}
-	}
-	printPrettyJSON(resp)
-	return nil
-}
-
-func firstDataSourceID(obj map[string]any) string {
-	dss, ok := obj["data_sources"].([]any)
-	if !ok || len(dss) == 0 {
-		return ""
-	}
-	first, ok := dss[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	return asString(first["id"])
-}
-
-func cmdListBlockChildren(profile, blockID string, pageSize int, startCursor string) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
-	}
-	normID, err := normalizeNotionID(blockID, "block")
-	if err != nil {
-		return err
-	}
-	if _, err := validatePageSize(pageSize); err != nil {
-		return err
-	}
-
+// lsPage lists a page's block children, auto-paginating through all results
+// (mirrors the legacy list-block-children behavior).
+func lsPage(secret, blockID string, long, jsonOut bool, pageSize int, startCursor string) (string, error) {
 	all := make([]any, 0)
 	cursor := startCursor
 	var hasMore bool
 	var nextCursor, requestID string
 
 	for {
-		path := "/v1/blocks/" + normID + "/children"
-		query := ""
+		path := "/v1/blocks/" + blockID + "/children"
 		if cursor != "" {
-			query = "start_cursor=" + cursor
-		}
-		if query != "" {
-			path += "?" + query
+			path += "?start_cursor=" + cursor
 		}
 		resp, err := notionGet(path, secret)
 		if err != nil {
-			return err
+			return "", err
 		}
 		results := asSlice(resp["results"])
 		all = append(all, results...)
@@ -333,9 +104,9 @@ func cmdListBlockChildren(profile, blockID string, pageSize int, startCursor str
 	}
 
 	out := map[string]any{
-		"object":    "list",
-		"results":   all,
-		"has_more":  hasMore,
+		"object":   "list",
+		"results":  all,
+		"has_more": hasMore,
 		"next_cursor": func() any {
 			if nextCursor == "" {
 				return nil
@@ -346,60 +117,320 @@ func cmdListBlockChildren(profile, blockID string, pageSize int, startCursor str
 	if requestID != "" {
 		out["request_id"] = requestID
 	}
-	printPrettyJSON(out)
-	return nil
+	if jsonOut {
+		return prettyJSON(out), nil
+	}
+	if long {
+		return formatLsLong("page", out), nil
+	}
+	return formatLsCompact("page", out), nil
 }
 
-func cmdTrashPage(profile, pageID string) error {
-	secret, err := selectedSecret(profile)
+// lsDatabase lists the data sources of a database.
+func lsDatabase(secret, dbID string, long, jsonOut bool) (string, error) {
+	data, err := notionGet("/v1/databases/"+dbID, secret)
 	if err != nil {
-		return err
+		return "", err
 	}
-	normPageID, err := normalizeNotionID(pageID, "page")
-	if err != nil {
-		return err
+	if jsonOut || long {
+		return prettyJSON(data), nil
 	}
-	resp, err := notionPatch("/v1/pages/"+normPageID, secret, map[string]any{"in_trash": true})
-	if err != nil {
-		return err
-	}
-	fmt.Println(formatTrashPageOutput(resp, normPageID))
-	return nil
+	return formatLsCompact("database", data), nil
 }
 
-func cmdTrashDatabase(profile, databaseID string) error {
-	secret, err := selectedSecret(profile)
-	if err != nil {
-		return err
+// lsDataSource queries a data source's rows (mirrors the legacy
+// query-data-source behavior, including --filter/--sorts/--in-trash/--result-type).
+func lsDataSource(secret, dsID string, long, jsonOut bool, pageSize int, startCursor, filterRaw, sortsRaw string, inTrash bool, resultType string) (string, error) {
+	payload := map[string]any{}
+	if sortsRaw != "" {
+		sorts, err := parseJSONOption(sortsRaw, "array", "--sorts")
+		if err != nil {
+			return "", err
+		}
+		payload["sorts"] = sorts
 	}
-	normID, err := normalizeNotionID(databaseID, "database")
-	if err != nil {
-		return err
+	if filterRaw != "" {
+		filter, err := parseJSONOption(filterRaw, "object", "--filter")
+		if err != nil {
+			return "", err
+		}
+		payload["filter"] = filter
 	}
-	resp, err := notionPatch("/v1/databases/"+normID, secret, map[string]any{"in_trash": true})
-	if err != nil {
-		return err
+	if startCursor != "" {
+		payload["start_cursor"] = startCursor
 	}
-	fmt.Println(formatTrashDatabaseOutput(resp, normID))
-	return nil
+	payload["page_size"] = pageSize
+	if inTrash {
+		payload["in_trash"] = true
+	}
+	if resultType != "" {
+		payload["result_type"] = resultType
+	}
+	resp, err := notionPost("/v1/data_sources/"+dsID+"/query", secret, payload)
+	if err != nil {
+		return "", err
+	}
+	if jsonOut || long {
+		return prettyJSON(resp), nil
+	}
+	return formatLsCompact("data_source", resp), nil
 }
 
-func cmdTrashDataSource(profile, dataSourceID string) error {
+func cmdRead(profile, ref, sliceRaw string, long, metadata, jsonOut bool) (string, error) {
 	secret, err := selectedSecret(profile)
 	if err != nil {
-		return err
+		return "", err
 	}
-	normID, err := normalizeNotionID(dataSourceID, "data source")
+	kind, normID, err := parseResourceRef(ref)
 	if err != nil {
-		return err
+		return "", err
 	}
-	resp, err := notionPatch("/v1/data_sources/"+normID, secret, map[string]any{"in_trash": true})
-	if err != nil {
-		return err
+	if strings.TrimSpace(sliceRaw) != "" && kind != "page" {
+		return "", cliError{"--slice is only valid for pages."}
 	}
-	fmt.Println(formatTrashDataSourceOutput(resp, normID))
-	return nil
+	switch kind {
+	case "page":
+		return readPage(secret, normID, sliceRaw, long, metadata, jsonOut)
+	case "database":
+		data, err := notionGet("/v1/databases/"+normID, secret)
+		if err != nil {
+			return "", err
+		}
+		return prettyJSON(data), nil
+	case "data_source":
+		data, err := notionGet("/v1/data_sources/"+normID, secret)
+		if err != nil {
+			return "", err
+		}
+		return prettyJSON(data), nil
+	}
+	return "", cliError{"unsupported resource type: " + kind}
 }
+
+// readPage fetches a page. Default output is the markdown body only
+// (pipe-friendly); --metadata appends a metadata footer; -l renders the full
+// title+URL+body+metadata block; --json returns the raw page object.
+func readPage(secret, pageID, sliceRaw string, long, metadata, jsonOut bool) (string, error) {
+	pageMeta, err := notionGet("/v1/pages/"+pageID, secret)
+	if err != nil {
+		return "", err
+	}
+	if jsonOut {
+		return prettyJSON(pageMeta), nil
+	}
+	data, err := notionGet("/v1/pages/"+pageID+"/markdown", secret)
+	if err != nil {
+		return "", err
+	}
+	var sliceRange *[2]int
+	if strings.TrimSpace(sliceRaw) != "" {
+		v, err := parseSlice(sliceRaw)
+		if err != nil {
+			return "", err
+		}
+		sliceRange = &v
+	}
+	body := convertNotionMarkdown(asString(data["markdown"]))
+	if sliceRange != nil {
+		lines := strings.Split(body, "\n")
+		start, end := sliceRange[0], sliceRange[1]
+		if start > len(lines) {
+			start = len(lines)
+		}
+		if end > len(lines) {
+			end = len(lines)
+		}
+		body = strings.Join(lines[start:end], "\n")
+	}
+	if long {
+		return formatFetchOutput(data, pageMeta, sliceRange), nil
+	}
+	if metadata {
+		return body + "\n\n---\n\n" + renderMetadataBlock(pageMetadataLines(data, sliceRange)), nil
+	}
+	return body, nil
+}
+
+func cmdMkdb(profile, title, parentRef, propertiesRaw string) (string, error) {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return "", err
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "", cliError{"Title cannot be empty."}
+	}
+	pKind, pParentID, err := parseResourceRef(parentRef)
+	if err != nil {
+		return "", err
+	}
+	if pKind != "page" {
+		return "", cliError{"mkdb parent must be a page."}
+	}
+
+	properties := map[string]any{
+		"Name": map[string]any{"title": map[string]any{}},
+	}
+	if strings.TrimSpace(propertiesRaw) != "" {
+		parsed, err := parseJSONOption(propertiesRaw, "object", "--properties")
+		if err != nil {
+			return "", err
+		}
+		properties = asMap(parsed)
+	}
+
+	body := map[string]any{
+		"parent":     map[string]any{"type": "page_id", "page_id": pParentID},
+		"title":      []any{map[string]any{"text": map[string]any{"content": title}}},
+		"properties": properties,
+	}
+
+	resp, err := notionPost("/v1/databases", secret, body)
+	if err != nil {
+		return "", err
+	}
+	if firstDataSourceID(resp) == "" {
+		// Some server versions only attach data sources after a follow-up read.
+		dbID := asString(resp["id"])
+		if dbID != "" {
+			refetched, err := notionGet("/v1/databases/"+dbID, secret)
+			if err == nil {
+				resp = refetched
+			}
+		}
+	}
+	return prettyJSON(resp), nil
+}
+
+// cmdWrite creates a page (legacy create-page). --parent is a page or data
+// source (use the ds: prefix for the latter); content comes from --content,
+// --content-file, or piped stdin.
+func cmdWrite(profile, title, parentRef, content, contentFile string) (string, error) {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return "", err
+	}
+	pKind, pParentID, err := parseResourceRef(parentRef)
+	if err != nil {
+		return "", err
+	}
+	if pKind != "page" && pKind != "data_source" {
+		return "", cliError{"write parent must be a page or data source."}
+	}
+	titleProp := ""
+	if pKind == "data_source" {
+		dataSource, err := notionGet("/v1/data_sources/"+pParentID, secret)
+		if err != nil {
+			return "", err
+		}
+		titleProp, err = extractTitlePropertyName(dataSource)
+		if err != nil {
+			return "", err
+		}
+	}
+	body, err := buildCreatePageBody(title, pKind, pParentID, content, contentFile, titleProp)
+	if err != nil {
+		return "", err
+	}
+	pageData, err := notionPost("/v1/pages", secret, body)
+	if err != nil {
+		return "", err
+	}
+	return formatCreatePageOutput(pageData), nil
+}
+
+// cmdEdit modifies a page's content (legacy update-page). Either --replace
+// (whole-page replacement) or one or more --old/--new pairs (search-replace).
+func cmdEdit(profile, ref string, replace bool, content, contentFile string, olds, news []string, replaceAll, allowDeleting bool) (string, error) {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return "", err
+	}
+	kind, normID, err := parseResourceRef(ref)
+	if err != nil {
+		return "", err
+	}
+	if kind != "page" {
+		return "", cliError{"edit only supports pages."}
+	}
+	mode, body, err := buildUpdatePageBody(replace, content, contentFile, olds, news, replaceAll, allowDeleting)
+	if err != nil {
+		return "", err
+	}
+	updateData, err := notionPatch("/v1/pages/"+normID+"/markdown", secret, body)
+	if err != nil {
+		return "", err
+	}
+	pageMeta, err := notionGet("/v1/pages/"+normID, secret)
+	if err != nil {
+		return "", err
+	}
+	return formatUpdatePageOutput(updateData, pageMeta, mode), nil
+}
+
+func cmdMv(profile, ref, parentRef string) (string, error) {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return "", err
+	}
+	kind, normID, err := parseResourceRef(ref)
+	if err != nil {
+		return "", err
+	}
+	if kind != "page" {
+		return "", cliError{"mv only supports pages."}
+	}
+	pKind, pParentID, err := parseResourceRef(parentRef)
+	if err != nil {
+		return "", err
+	}
+	if pKind != "page" && pKind != "data_source" {
+		return "", cliError{"mv parent must be a page or data source."}
+	}
+	parent, body, err := buildMovePageBody(pKind, pParentID, normID)
+	if err != nil {
+		return "", err
+	}
+	pageData, err := notionPatch("/v1/pages/"+normID, secret, body)
+	if err != nil {
+		return "", err
+	}
+	return formatMovePageOutput(pageData, parent), nil
+}
+
+func cmdRm(profile, ref string) (string, error) {
+	secret, err := selectedSecret(profile)
+	if err != nil {
+		return "", err
+	}
+	kind, normID, err := parseResourceRef(ref)
+	if err != nil {
+		return "", err
+	}
+	switch kind {
+	case "page":
+		resp, err := notionPatch("/v1/pages/"+normID, secret, map[string]any{"in_trash": true})
+		if err != nil {
+			return "", err
+		}
+		return formatTrashPageOutput(resp, normID), nil
+	case "database":
+		resp, err := notionPatch("/v1/databases/"+normID, secret, map[string]any{"in_trash": true})
+		if err != nil {
+			return "", err
+		}
+		return formatTrashDatabaseOutput(resp, normID), nil
+	case "data_source":
+		resp, err := notionPatch("/v1/data_sources/"+normID, secret, map[string]any{"in_trash": true})
+		if err != nil {
+			return "", err
+		}
+		return formatTrashDataSourceOutput(resp, normID), nil
+	}
+	return "", cliError{"unsupported resource type: " + kind}
+}
+
+// --- profile arg normalization --------------------------------------------
 
 func normalizeProfileArgs(argv []string) []string {
 	normalized := make([]string, 0, len(argv))
@@ -429,12 +460,14 @@ func normalizeProfileArgs(argv []string) []string {
 	return normalized
 }
 
+// --- command tree ----------------------------------------------------------
+
 func NewCommand() *cobra.Command {
 	var profile string
 
 	rootCmd := &cobra.Command{
 		Use:           "notion",
-		Short:         "Lightweight Notion CLI for searching, reading, creating, moving, updating, and trashing pages, databases, and data sources.",
+		Short:         "Unix-style Notion CLI: find, ls, read, mkdb, write, edit, mv, and rm your Notion pages, databases, and data sources.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -446,221 +479,234 @@ func NewCommand() *cobra.Command {
 		Use:   "configure",
 		Short: "Configure a Notion profile",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdConfigure(profile)
+			out, err := cmdConfigure(profile)
+			if err != nil {
+				return err
+			}
+			if out != "" {
+				fmt.Println(out)
+			}
+			return nil
 		},
 	}
 
+	// find
 	var (
-		searchSortTimestamp string
-		searchSortDirection string
-		searchStartCursor   string
-		searchPageSize      int
+		findSortTimestamp string
+		findSortDirection string
+		findStartCursor   string
+		findPageSize      int
+		findLong          bool
+		findJSON          bool
 	)
-	searchCmd := &cobra.Command{
-		Use:   "search [QUERY]",
-		Short: "Search Notion",
+	findCmd := &cobra.Command{
+		Use:   "find [QUERY]",
+		Short: "Search your Notion workspace",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := ""
 			if len(args) > 0 {
 				query = args[0]
 			}
-			if searchSortDirection != "ascending" && searchSortDirection != "descending" {
-				return cliError{"--sort-direction must be one of: ascending, descending."}
+			out, err := cmdFind(profile, query, findSortTimestamp, findSortDirection, findStartCursor, findPageSize, findLong, findJSON)
+			if err != nil {
+				return err
 			}
-			return cmdSearch(profile, query, searchSortTimestamp, searchSortDirection, searchStartCursor, searchPageSize)
+			fmt.Println(out)
+			return nil
 		},
 	}
-	searchCmd.Flags().StringVar(&searchSortTimestamp, "sort-timestamp", "last_edited_time", "")
-	searchCmd.Flags().StringVar(&searchSortDirection, "sort-direction", "descending", "")
-	searchCmd.Flags().StringVar(&searchStartCursor, "start-cursor", "", "")
-	searchCmd.Flags().IntVar(&searchPageSize, "page-size", 10, "")
+	findCmd.Flags().StringVar(&findSortTimestamp, "sort-timestamp", "last_edited_time", "Sort timestamp: created_time or last_edited_time")
+	findCmd.Flags().StringVar(&findSortDirection, "sort-direction", "descending", "Sort direction: ascending or descending")
+	findCmd.Flags().StringVar(&findStartCursor, "start-cursor", "", "Pagination cursor")
+	findCmd.Flags().IntVar(&findPageSize, "page-size", 10, "Number of results (1-100)")
+	findCmd.Flags().BoolVarP(&findLong, "long", "l", false, "Rich, multi-line output")
+	findCmd.Flags().BoolVar(&findJSON, "json", false, "Raw Notion JSON output")
 
-	var fetchSlice string
-	fetchPageCmd := &cobra.Command{
-		Use:   "fetch-page PAGE_ID",
-		Short: "Fetch a Notion page",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdFetchPage(profile, args[0], fetchSlice)
-		},
-	}
-	fetchPageCmd.Flags().StringVar(&fetchSlice, "slice", "", "")
-
-	fetchDatabaseCmd := &cobra.Command{
-		Use:   "fetch-database DATABASE_ID",
-		Short: "Fetch a Notion database",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdFetchDatabase(profile, args[0])
-		},
-	}
-
-	fetchDataSourceCmd := &cobra.Command{
-		Use:   "fetch-data-source DATA_SOURCE_ID",
-		Short: "Fetch a Notion data source",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdFetchDataSource(profile, args[0])
-		},
-	}
-
+	// ls
 	var (
-		querySorts      string
-		queryFilter     string
-		queryCursor     string
-		queryPageSize   int
-		queryInTrash    bool
-		queryResultType string
+		lsPageSize    int
+		lsStartCursor string
+		lsFilter      string
+		lsSorts       string
+		lsInTrash     bool
+		lsResultType  string
+		lsLong        bool
+		lsJSON        bool
 	)
-	queryDataSourceCmd := &cobra.Command{
-		Use:   "query-data-source DATA_SOURCE_ID",
-		Short: "Query a Notion data source",
+	lsCmd := &cobra.Command{
+		Use:   "ls PATH",
+		Short: "List the children of a page, database, or data source",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdQueryDataSource(profile, args[0], querySorts, queryFilter, queryCursor, queryPageSize, queryInTrash, queryResultType)
-		},
-	}
-	queryDataSourceCmd.Flags().StringVar(&querySorts, "sorts", "", "")
-	queryDataSourceCmd.Flags().StringVar(&queryFilter, "filter", "", "")
-	queryDataSourceCmd.Flags().StringVar(&queryCursor, "start-cursor", "", "")
-	queryDataSourceCmd.Flags().IntVar(&queryPageSize, "page-size", 10, "")
-	queryDataSourceCmd.Flags().BoolVar(&queryInTrash, "in-trash", false, "")
-	queryDataSourceCmd.Flags().StringVar(&queryResultType, "result-type", "", "")
-
-	var (
-		createParentPageID       string
-		createParentDataSourceID string
-		createContent            string
-		createContentFile        string
-	)
-	createPageCmd := &cobra.Command{
-		Use:   "create-page TITLE",
-		Short: "Create a new Notion page",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdCreatePage(profile, args[0], createParentPageID, createParentDataSourceID, createContent, createContentFile)
-		},
-	}
-	createPageCmd.Flags().StringVar(&createParentPageID, "parent-page-id", "", "")
-	createPageCmd.Flags().StringVar(&createParentDataSourceID, "parent-data-source-id", "", "")
-	createPageCmd.Flags().StringVar(&createContent, "content", "", "")
-	createPageCmd.Flags().StringVar(&createContentFile, "content-file", "", "")
-
-	var createDatabaseParentPageID string
-	var createDatabaseProperties string
-	createDatabaseCmd := &cobra.Command{
-		Use:   "create-database TITLE",
-		Short: "Create a new Notion database",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdCreateDatabase(profile, args[0], createDatabaseParentPageID, createDatabaseProperties)
-		},
-	}
-	createDatabaseCmd.Flags().StringVar(&createDatabaseParentPageID, "parent-page-id", "", "")
-	createDatabaseCmd.Flags().StringVar(&createDatabaseProperties, "properties", "", "")
-
-	var (
-		listChildrenPageSize    int
-		listChildrenStartCursor string
-	)
-	listBlockChildrenCmd := &cobra.Command{
-		Use:   "list-block-children BLOCK_ID",
-		Short: "List the children of a Notion block or page",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdListBlockChildren(profile, args[0], listChildrenPageSize, listChildrenStartCursor)
-		},
-	}
-	listBlockChildrenCmd.Flags().IntVar(&listChildrenPageSize, "page-size", 100, "")
-	listBlockChildrenCmd.Flags().StringVar(&listChildrenStartCursor, "start-cursor", "", "")
-
-	trashPageCmd := &cobra.Command{
-		Use:   "trash-page PAGE_ID",
-		Short: "Move a Notion page to trash",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdTrashPage(profile, args[0])
-		},
-	}
-
-	trashDatabaseCmd := &cobra.Command{
-		Use:   "trash-database DATABASE_ID",
-		Short: "Move a Notion database to trash",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdTrashDatabase(profile, args[0])
-		},
-	}
-
-	trashDataSourceCmd := &cobra.Command{
-		Use:   "trash-data-source DATA_SOURCE_ID",
-		Short: "Move a Notion data source to trash",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdTrashDataSource(profile, args[0])
-		},
-	}
-
-	var (
-		moveParentPageID       string
-		moveParentDataSourceID string
-	)
-	movePageCmd := &cobra.Command{
-		Use:   "move-page PAGE_ID",
-		Short: "Move a Notion page",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			hasPage := strings.TrimSpace(moveParentPageID) != ""
-			hasDataSource := strings.TrimSpace(moveParentDataSourceID) != ""
-			if hasPage == hasDataSource {
-				return cliError{"move-page requires exactly one of --parent-page-id or --parent-data-source-id."}
+			out, err := cmdLs(profile, args[0], lsLong, lsJSON, lsPageSize, lsStartCursor, lsFilter, lsSorts, lsInTrash, lsResultType)
+			if err != nil {
+				return err
 			}
-			return cmdMovePage(profile, args[0], moveParentPageID, moveParentDataSourceID)
+			fmt.Println(out)
+			return nil
 		},
 	}
-	movePageCmd.Flags().StringVar(&moveParentPageID, "parent-page-id", "", "")
-	movePageCmd.Flags().StringVar(&moveParentDataSourceID, "parent-data-source-id", "", "")
+	lsCmd.Flags().IntVar(&lsPageSize, "page-size", 100, "Page size (1-100)")
+	lsCmd.Flags().StringVar(&lsStartCursor, "start-cursor", "", "Pagination cursor")
+	lsCmd.Flags().StringVar(&lsFilter, "filter", "", "Filter JSON (data sources only)")
+	lsCmd.Flags().StringVar(&lsSorts, "sorts", "", "Sorts JSON array (data sources only)")
+	lsCmd.Flags().BoolVar(&lsInTrash, "in-trash", false, "Include trashed entries (data sources only)")
+	lsCmd.Flags().StringVar(&lsResultType, "result-type", "", "Notion result_type (data sources only)")
+	lsCmd.Flags().BoolVarP(&lsLong, "long", "l", false, "Rich, multi-line output")
+	lsCmd.Flags().BoolVar(&lsJSON, "json", false, "Raw Notion JSON output")
 
+	// read
 	var (
-		updateReplace       bool
-		updateContent       string
-		updateContentFile   string
-		updateReplaceAll    bool
-		updateAllowDeleting bool
-		updateOlds          []string
-		updateNews          []string
+		readSlice string
+		readLong  bool
+		readMeta  bool
+		readJSON  bool
 	)
-	updatePageCmd := &cobra.Command{
-		Use:   "update-page PAGE_ID",
-		Short: "Update a Notion page",
+	readCmd := &cobra.Command{
+		Use:   "read PATH",
+		Short: "Read a page (Markdown), database, or data source (JSON)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdUpdatePage(profile, args[0], updateReplace, updateContent, updateContentFile, updateOlds, updateNews, updateReplaceAll, updateAllowDeleting)
+			out, err := cmdRead(profile, args[0], readSlice, readLong, readMeta, readJSON)
+			if err != nil {
+				return err
+			}
+			fmt.Println(out)
+			return nil
 		},
 	}
-	updatePageCmd.Flags().BoolVar(&updateReplace, "replace", false, "")
-	updatePageCmd.Flags().StringVar(&updateContent, "content", "", "")
-	updatePageCmd.Flags().StringVar(&updateContentFile, "content-file", "", "")
-	updatePageCmd.Flags().BoolVar(&updateReplaceAll, "replace-all-matches", false, "")
-	updatePageCmd.Flags().BoolVar(&updateAllowDeleting, "allow-deleting-content", false, "")
-	updatePageCmd.Flags().StringArrayVar(&updateOlds, "old", nil, "")
-	updatePageCmd.Flags().StringArrayVar(&updateNews, "new", nil, "")
+	readCmd.Flags().StringVar(&readSlice, "slice", "", "Show only lines N-M (pages only)")
+	readCmd.Flags().BoolVarP(&readLong, "long", "l", false, "Rich output with title/URL/metadata (pages)")
+	readCmd.Flags().BoolVar(&readMeta, "metadata", false, "Append a metadata footer (pages)")
+	readCmd.Flags().BoolVar(&readJSON, "json", false, "Raw Notion JSON output")
+
+	// mkdb
+	var (
+		mkdbParent     string
+		mkdbProperties string
+	)
+	mkdbCmd := &cobra.Command{
+		Use:   "mkdb TITLE",
+		Short: "Create a database under a page",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := cmdMkdb(profile, args[0], mkdbParent, mkdbProperties)
+			if err != nil {
+				return err
+			}
+			fmt.Println(out)
+			return nil
+		},
+	}
+	mkdbCmd.Flags().StringVar(&mkdbParent, "parent", "", "Parent page ID (page:<id> or bare ID)")
+	if err := mkdbCmd.MarkFlagRequired("parent"); err != nil {
+		panic(err)
+	}
+	mkdbCmd.Flags().StringVar(&mkdbProperties, "properties", "", "Properties schema JSON")
+
+	// write (create page)
+	var (
+		writeParent      string
+		writeContent     string
+		writeContentFile string
+	)
+	writeCmd := &cobra.Command{
+		Use:   "write TITLE",
+		Short: "Create a page under a page or data source",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := cmdWrite(profile, args[0], writeParent, writeContent, writeContentFile)
+			if err != nil {
+				return err
+			}
+			fmt.Println(out)
+			return nil
+		},
+	}
+	writeCmd.Flags().StringVar(&writeParent, "parent", "", "Parent page or data source (page:<id>, ds:<id>, or bare ID)")
+	if err := writeCmd.MarkFlagRequired("parent"); err != nil {
+		panic(err)
+	}
+	writeCmd.Flags().StringVar(&writeContent, "content", "", "Inline Markdown body")
+	writeCmd.Flags().StringVar(&writeContentFile, "content-file", "", "Read Markdown body from a file")
+
+	// edit (update page)
+	var (
+		editReplace       bool
+		editContent       string
+		editContentFile   string
+		editReplaceAll    bool
+		editAllowDeleting bool
+		editOlds          []string
+		editNews          []string
+	)
+	editCmd := &cobra.Command{
+		Use:   "edit PAGE_REF",
+		Short: "Update a page's content (replace or search-replace)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := cmdEdit(profile, args[0], editReplace, editContent, editContentFile, editOlds, editNews, editReplaceAll, editAllowDeleting)
+			if err != nil {
+				return err
+			}
+			fmt.Println(out)
+			return nil
+		},
+	}
+	editCmd.Flags().BoolVar(&editReplace, "replace", false, "Replace the entire page content")
+	editCmd.Flags().StringVar(&editContent, "content", "", "Replacement Markdown content (with --replace)")
+	editCmd.Flags().StringVar(&editContentFile, "content-file", "", "Read replacement Markdown from a file (with --replace)")
+	editCmd.Flags().BoolVar(&editReplaceAll, "replace-all-matches", false, "Replace all matches for each --old")
+	editCmd.Flags().BoolVar(&editAllowDeleting, "allow-deleting-content", false, "Allow operations that delete child pages or databases")
+	editCmd.Flags().StringArrayVar(&editOlds, "old", nil, "Existing string to find (repeatable)")
+	editCmd.Flags().StringArrayVar(&editNews, "new", nil, "Replacement string (repeatable)")
+
+	// mv
+	var mvParent string
+	mvCmd := &cobra.Command{
+		Use:   "mv PAGE_REF",
+		Short: "Move a page under a different parent",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := cmdMv(profile, args[0], mvParent)
+			if err != nil {
+				return err
+			}
+			fmt.Println(out)
+			return nil
+		},
+	}
+	mvCmd.Flags().StringVar(&mvParent, "parent", "", "Destination parent page or data source (page:<id>, ds:<id>, or bare ID)")
+	if err := mvCmd.MarkFlagRequired("parent"); err != nil {
+		panic(err)
+	}
+
+	// rm
+	rmCmd := &cobra.Command{
+		Use:   "rm PATH",
+		Short: "Move a page, database, or data source to trash",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := cmdRm(profile, args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Println(out)
+			return nil
+		},
+	}
 
 	rootCmd.AddCommand(
 		configureCmd,
-		searchCmd,
-		fetchPageCmd,
-		fetchDatabaseCmd,
-		fetchDataSourceCmd,
-		queryDataSourceCmd,
-		createPageCmd,
-		createDatabaseCmd,
-		listBlockChildrenCmd,
-		movePageCmd,
-		updatePageCmd,
-		trashPageCmd,
-		trashDatabaseCmd,
-		trashDataSourceCmd,
+		findCmd,
+		lsCmd,
+		readCmd,
+		mkdbCmd,
+		writeCmd,
+		editCmd,
+		mvCmd,
+		rmCmd,
 	)
 
 	return rootCmd

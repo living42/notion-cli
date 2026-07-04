@@ -120,14 +120,14 @@ func selectedSecret(profile string) (string, error) {
 	return cfg.secret(selectedProfile)
 }
 
-func cmdConfigure(profile string) error {
+func cmdConfigure(profile string) (string, error) {
 	selectedProfile, err := getSelectedProfile(profile)
 	if err != nil {
-		return err
+		return "", err
 	}
 	cfg, err := loadConfig(false)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	existingSecret := strings.TrimSpace(cfg.Profiles[selectedProfile].NotionSecret)
@@ -137,7 +137,7 @@ func cmdConfigure(profile string) error {
 		answer, _ := reader.ReadString('\n')
 		if strings.ToLower(strings.TrimSpace(answer)) != "y" {
 			fmt.Println("Aborted.")
-			return nil
+			return "", nil
 		}
 	}
 
@@ -145,13 +145,13 @@ func cmdConfigure(profile string) error {
 	secret, _ := reader.ReadString('\n')
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
-		return cliError{"Secret cannot be empty."}
+		return "", cliError{"Secret cannot be empty."}
 	}
 
 	cfg.Profiles[selectedProfile] = Profile{NotionSecret: secret}
 	if err := cfg.save(); err != nil {
-		return err
+		return "", err
 	}
 	fmt.Printf("Config saved to %s (profile: %s)\n", configPath(), selectedProfile)
-	return nil
+	return "", nil
 }

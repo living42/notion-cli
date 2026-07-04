@@ -124,7 +124,7 @@ func setupE2E(t *testing.T) {
 
 // setupFixtures creates the shared resources under root.
 //   - scratch page: built via the CLI (the thing under test)
-//   - test database + data source: built via the CLI's create-database command
+//   - test database + data source: built via the CLI's mkdb command
 func setupFixtures(secret string) error {
 	ts := time.Now().UnixNano()
 
@@ -155,7 +155,7 @@ func createPageViaCLISetup(secret, title, parentPageID, content string) (string,
 	}
 	defer cleanup()
 
-	args := []string{"-p", e2eProfile, "create-page", title, "--parent-page-id", parentPageID}
+	args := []string{"-p", e2eProfile, "write", title, "--parent", parentPageID}
 	if content != "" {
 		args = append(args, "--content", content)
 	}
@@ -197,7 +197,7 @@ func writeTempConfig(secret string) (string, func(), error) {
 	return configPath, cleanup, nil
 }
 
-// createDatabaseViaCLI runs the create-database command as a subprocess and
+// createDatabaseViaCLI runs the mkdb command as a subprocess and
 // returns the database ID and its first data source ID.
 func createDatabaseViaCLI(secret, parentPageID, title string) (string, string, error) {
 	configPath, cleanup, err := writeTempConfig(secret)
@@ -206,7 +206,7 @@ func createDatabaseViaCLI(secret, parentPageID, title string) (string, string, e
 	}
 	defer cleanup()
 
-	cmd := exec.Command(binaryPath, "-p", e2eProfile, "create-database", title, "--parent-page-id", parentPageID)
+	cmd := exec.Command(binaryPath, "-p", e2eProfile, "mkdb", title, "--parent", parentPageID)
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
@@ -239,7 +239,7 @@ func createDatabaseViaCLI(secret, parentPageID, title string) (string, string, e
 	return dbID, dsID, nil
 }
 
-// trashPageViaCLI runs the trash-page command as a subprocess. It is used
+// trashPageViaCLI runs the rm command as a subprocess. It is used
 // only on the setup-failure path where we need best-effort cleanup.
 func trashPageViaCLI(secret, pageID string) error {
 	configPath, cleanup, err := writeTempConfig(secret)
@@ -248,7 +248,7 @@ func trashPageViaCLI(secret, pageID string) error {
 	}
 	defer cleanup()
 
-	cmd := exec.Command(binaryPath, "-p", e2eProfile, "trash-page", pageID)
+	cmd := exec.Command(binaryPath, "-p", e2eProfile, "rm", pageID)
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
@@ -297,9 +297,9 @@ func cleanupRoot(secret, parentID string) error {
 		var trashErr error
 		switch blockType {
 		case "child_page":
-			trashErr = runNotionCmd(configPath, "trash-page", id)
+			trashErr = runNotionCmd(configPath, "rm", id)
 		case "child_database":
-			trashErr = runNotionCmd(configPath, "trash-database", id)
+			trashErr = runNotionCmd(configPath, "rm", "db:"+id)
 		default:
 			continue
 		}
@@ -313,11 +313,11 @@ func cleanupRoot(secret, parentID string) error {
 	return nil
 }
 
-// listBlockChildrenViaCLI runs list-block-children and returns the results as
+// listBlockChildrenViaCLI runs ls --json and returns the results as
 // parsed maps. It is used only by cleanupRoot; the per-test list test calls
 // the binary directly via runNotion to assert on raw output.
 func listBlockChildrenViaCLI(configPath, blockID string) ([]map[string]any, error) {
-	cmd := exec.Command(binaryPath, "-p", e2eProfile, "list-block-children", blockID, "--page-size", "100")
+	cmd := exec.Command(binaryPath, "-p", e2eProfile, "ls", blockID, "--page-size", "100", "--json")
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
@@ -432,9 +432,7 @@ func TestE2E_Help(t *testing.T) {
 	setupE2E(t)
 	r := runNotion(t, "--help").mustSucceed(t)
 	for _, cmd := range []string{
-		"configure", "search", "fetch-page", "fetch-database", "fetch-data-source",
-		"query-data-source", "create-page", "create-database", "list-block-children",
-		"move-page", "update-page", "trash-page", "trash-database", "trash-data-source",
+		"configure", "find", "ls", "read", "mkdb", "write", "edit", "mv", "rm",
 	} {
 		if !strings.Contains(r.stdout, cmd) {
 			t.Errorf("--help missing %q", cmd)
@@ -445,9 +443,7 @@ func TestE2E_Help(t *testing.T) {
 func TestE2E_SubcommandHelp(t *testing.T) {
 	setupE2E(t)
 	for _, sub := range []string{
-		"search", "fetch-page", "create-page", "create-database", "list-block-children",
-		"update-page", "move-page", "query-data-source",
-		"trash-page", "trash-database", "trash-data-source",
+		"configure", "find", "ls", "read", "mkdb", "write", "edit", "mv", "rm",
 	} {
 		t.Run(sub, func(t *testing.T) {
 			r := runNotion(t, sub, "--help").mustSucceed(t)
@@ -462,23 +458,23 @@ func TestE2E_SubcommandHelp(t *testing.T) {
 
 func TestE2E_ProfileAfterSubcommand(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "search", "-p", e2eProfile, "e2e", "--page-size", "1").mustSucceed(t)
+	r := runNotion(t, "find", "-p", e2eProfile, "e2e", "--page-size", "1").mustSucceed(t)
 	if r.stdout == "" {
-		t.Errorf("expected non-empty search output")
+		t.Errorf("expected non-empty find output")
 	}
 }
 
 func TestE2E_ProfileEqualsForm(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "search", "--profile="+e2eProfile, "e2e", "--page-size", "1").mustSucceed(t)
+	r := runNotion(t, "find", "--profile="+e2eProfile, "e2e", "--page-size", "1").mustSucceed(t)
 	if r.stdout == "" {
-		t.Errorf("expected non-empty search output")
+		t.Errorf("expected non-empty find output")
 	}
 }
 
 func TestE2E_ProfileNotConfigured(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", "nonexistent-profile", "search", "e2e").mustFail(t)
+	r := runNotion(t, "-p", "nonexistent-profile", "find", "e2e").mustFail(t)
 	if !strings.Contains(r.stderr, "not configured") {
 		t.Errorf("expected 'not configured' error, got: %s", r.stderr)
 	}
@@ -488,7 +484,7 @@ func TestE2E_ProfileNotConfigured(t *testing.T) {
 
 func TestE2E_InvalidPageID(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "fetch-page", "not-a-uuid").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "read", "not-a-uuid").mustFail(t)
 	if !strings.Contains(r.stderr, "Invalid page ID") {
 		t.Errorf("expected 'Invalid page ID', got: %s", r.stderr)
 	}
@@ -496,7 +492,7 @@ func TestE2E_InvalidPageID(t *testing.T) {
 
 func TestE2E_InvalidPageSize(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "search", "e2e", "--page-size", "999").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "find", "e2e", "--page-size", "999").mustFail(t)
 	if !strings.Contains(r.stderr, "page-size") {
 		t.Errorf("expected page-size error, got: %s", r.stderr)
 	}
@@ -504,7 +500,7 @@ func TestE2E_InvalidPageSize(t *testing.T) {
 
 func TestE2E_NegativePageSize(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "search", "e2e", "--page-size", "0").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "find", "e2e", "--page-size", "0").mustFail(t)
 	if !strings.Contains(r.stderr, "page-size") {
 		t.Errorf("expected page-size error, got: %s", r.stderr)
 	}
@@ -512,7 +508,7 @@ func TestE2E_NegativePageSize(t *testing.T) {
 
 func TestE2E_InvalidSlice(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "fetch-page", scratchPageID, "--slice", "bad").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "read", scratchPageID, "--slice", "bad").mustFail(t)
 	if !strings.Contains(r.stderr, "--slice") {
 		t.Errorf("expected --slice error, got: %s", r.stderr)
 	}
@@ -520,7 +516,7 @@ func TestE2E_InvalidSlice(t *testing.T) {
 
 func TestE2E_SliceStartAfterEnd(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "fetch-page", scratchPageID, "--slice", "5-2").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "read", scratchPageID, "--slice", "5-2").mustFail(t)
 	if !strings.Contains(r.stderr, "0 <= N <= M") {
 		t.Errorf("expected range error, got: %s", r.stderr)
 	}
@@ -528,7 +524,7 @@ func TestE2E_SliceStartAfterEnd(t *testing.T) {
 
 func TestE2E_MissingArg(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "fetch-page").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "read").mustFail(t)
 	if r.stderr == "" {
 		t.Errorf("expected cobra arg error on stderr")
 	}
@@ -536,87 +532,65 @@ func TestE2E_MissingArg(t *testing.T) {
 
 func TestE2E_InvalidSortDirection(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "search", "e2e", "--sort-direction", "sideways").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "find", "e2e", "--sort-direction", "sideways").mustFail(t)
 	if !strings.Contains(r.stderr, "sort-direction") {
 		t.Errorf("expected sort-direction error, got: %s", r.stderr)
 	}
 }
 
-// --- create-page validation -------------------------------------------------
+// --- write (create-page) validation ----------------------------------------
 
-func TestE2E_CreatePageNoParent(t *testing.T) {
+func TestE2E_WriteNoParent(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "create-page", "T").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "write", "T").mustFail(t)
 	if !strings.Contains(r.stderr, "parent") {
 		t.Errorf("expected parent error, got: %s", r.stderr)
 	}
 }
 
-func TestE2E_CreatePageBothParents(t *testing.T) {
+func TestE2E_WriteEmptyTitle(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "create-page", "T",
-		"--parent-page-id", "00000000000000000000000000000001",
-		"--parent-data-source-id", "00000000000000000000000000000002",
-	).mustFail(t)
-	if !strings.Contains(r.stderr, "exactly one") {
-		t.Errorf("expected 'exactly one' error, got: %s", r.stderr)
-	}
-}
-
-func TestE2E_CreatePageEmptyTitle(t *testing.T) {
-	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "create-page", "   ",
-		"--parent-page-id", "00000000000000000000000000000001",
+	r := runNotion(t, "-p", e2eProfile, "write", "   ",
+		"--parent", "00000000000000000000000000000001",
 	).mustFail(t)
 	if !strings.Contains(r.stderr, "Title") && !strings.Contains(r.stderr, "empty") {
 		t.Errorf("expected empty title error, got: %s", r.stderr)
 	}
 }
 
-// --- move-page validation ---------------------------------------------------
+// --- mv (move-page) validation ---------------------------------------------
 
-func TestE2E_MovePageNoParent(t *testing.T) {
+func TestE2E_MvNoParent(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "move-page", scratchPageID).mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "mv", scratchPageID).mustFail(t)
 	if !strings.Contains(r.stderr, "parent") {
 		t.Errorf("expected parent error, got: %s", r.stderr)
 	}
 }
 
-func TestE2E_MovePageBothParents(t *testing.T) {
+func TestE2E_MvSelf(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "move-page", scratchPageID,
-		"--parent-page-id", "00000000000000000000000000000001",
-		"--parent-data-source-id", "00000000000000000000000000000002",
-	).mustFail(t)
-	if !strings.Contains(r.stderr, "exactly one") {
-		t.Errorf("expected 'exactly one' error, got: %s", r.stderr)
-	}
-}
-
-func TestE2E_MovePageSelf(t *testing.T) {
-	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "move-page", scratchPageID,
-		"--parent-page-id", scratchPageID,
+	r := runNotion(t, "-p", e2eProfile, "mv", scratchPageID,
+		"--parent", scratchPageID,
 	).mustFail(t)
 	if !strings.Contains(r.stderr, "different") {
 		t.Errorf("expected 'different' error, got: %s", r.stderr)
 	}
 }
 
-// --- update-page validation -------------------------------------------------
+// --- edit (update-page) validation -----------------------------------------
 
-func TestE2E_UpdatePageNoContent(t *testing.T) {
+func TestE2E_EditNoContent(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "update-page", scratchPageID).mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "edit", scratchPageID).mustFail(t)
 	if !strings.Contains(r.stderr, "--old") && !strings.Contains(r.stderr, "--replace") {
 		t.Errorf("expected --old/--new or --replace error, got: %s", r.stderr)
 	}
 }
 
-func TestE2E_UpdatePageMismatchedOldNew(t *testing.T) {
+func TestE2E_EditMismatchedOldNew(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "update-page", scratchPageID,
+	r := runNotion(t, "-p", e2eProfile, "edit", scratchPageID,
 		"--old", "foo", "--new", "bar", "--old", "baz",
 	).mustFail(t)
 	if !strings.Contains(r.stderr, "same number") {
@@ -624,9 +598,9 @@ func TestE2E_UpdatePageMismatchedOldNew(t *testing.T) {
 	}
 }
 
-func TestE2E_UpdatePageReplaceWithOldNew(t *testing.T) {
+func TestE2E_EditReplaceWithOldNew(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "update-page", scratchPageID,
+	r := runNotion(t, "-p", e2eProfile, "edit", scratchPageID,
 		"--replace", "--old", "foo", "--new", "bar",
 	).mustFail(t)
 	if !strings.Contains(r.stderr, "Do not mix") {
@@ -634,9 +608,9 @@ func TestE2E_UpdatePageReplaceWithOldNew(t *testing.T) {
 	}
 }
 
-func TestE2E_UpdatePageContentWithoutReplace(t *testing.T) {
+func TestE2E_EditContentWithoutReplace(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "update-page", scratchPageID,
+	r := runNotion(t, "-p", e2eProfile, "edit", scratchPageID,
 		"--content", "hello",
 	).mustFail(t)
 	if !strings.Contains(r.stderr, "--replace") {
@@ -644,27 +618,27 @@ func TestE2E_UpdatePageContentWithoutReplace(t *testing.T) {
 	}
 }
 
-// --- query-data-source validation -------------------------------------------
+// --- ls (query-data-source) validation -------------------------------------
 
-func TestE2E_QueryDataSourceInvalidSorts(t *testing.T) {
+func TestE2E_LsDataSourceInvalidSorts(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "query-data-source", testDSID, "--sorts", "not-json").mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "ls", "ds:"+testDSID, "--sorts", "not-json").mustFail(t)
 	if !strings.Contains(r.stderr, "JSON") {
 		t.Errorf("expected JSON error, got: %s", r.stderr)
 	}
 }
 
-func TestE2E_QueryDataSourceSortsNotArray(t *testing.T) {
+func TestE2E_LsDataSourceSortsNotArray(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "query-data-source", testDSID, "--sorts", `{"foo":"bar"}`).mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "ls", "ds:"+testDSID, "--sorts", `{"foo":"bar"}`).mustFail(t)
 	if !strings.Contains(r.stderr, "array") {
 		t.Errorf("expected array error, got: %s", r.stderr)
 	}
 }
 
-func TestE2E_QueryDataSourceFilterNotObject(t *testing.T) {
+func TestE2E_LsDataSourceFilterNotObject(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "query-data-source", testDSID, "--filter", `[1,2,3]`).mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "ls", "ds:"+testDSID, "--filter", `[1,2,3]`).mustFail(t)
 	if !strings.Contains(r.stderr, "object") {
 		t.Errorf("expected object error, got: %s", r.stderr)
 	}
@@ -672,73 +646,73 @@ func TestE2E_QueryDataSourceFilterNotObject(t *testing.T) {
 
 // --- read operations (API) --------------------------------------------------
 
-func TestE2E_Search(t *testing.T) {
+func TestE2E_Find(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "search", "", "--page-size", "5").mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "find", "", "--page-size", "5").mustSucceed(t)
 	if r.stdout == "" {
-		t.Errorf("expected non-empty search output")
+		t.Errorf("expected non-empty find output")
 	}
 }
 
-func TestE2E_SearchWithQuery(t *testing.T) {
+func TestE2E_FindWithQuery(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "search", "e2e", "--page-size", "3").mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "find", "e2e", "--page-size", "3").mustSucceed(t)
 	if r.stdout == "" {
-		t.Errorf("expected non-empty search output")
+		t.Errorf("expected non-empty find output")
 	}
 }
 
-func TestE2E_SearchWithSort(t *testing.T) {
+func TestE2E_FindWithSort(t *testing.T) {
 	setupE2E(t)
 	// Notion only accepts `last_edited_time` for the search sort timestamp;
 	// using `created_time` is rejected by the server.
-	r := runNotion(t, "-p", e2eProfile, "search", "",
+	r := runNotion(t, "-p", e2eProfile, "find", "",
 		"--sort-timestamp", "last_edited_time",
 		"--sort-direction", "ascending",
 		"--page-size", "3",
 	).mustSucceed(t)
 	if r.stdout == "" {
-		t.Errorf("expected non-empty search output")
+		t.Errorf("expected non-empty find output")
 	}
 }
 
-func TestE2E_FetchPage(t *testing.T) {
+func TestE2E_ReadPage(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "fetch-page", scratchPageID).mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "read", "-l", scratchPageID).mustSucceed(t)
 	if !strings.Contains(r.stdout, "page_id:") {
 		t.Errorf("expected metadata block, got: %s", r.stdout)
 	}
 }
 
-func TestE2E_FetchPageWithSlice(t *testing.T) {
+func TestE2E_ReadPageWithSlice(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "fetch-page", scratchPageID, "--slice", "0-2").mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "read", "-l", scratchPageID, "--slice", "0-2").mustSucceed(t)
 	if !strings.Contains(r.stdout, "slice: 0-2") {
 		t.Errorf("expected slice metadata, got: %s", r.stdout)
 	}
 }
 
-func TestE2E_FetchPageNotFound(t *testing.T) {
+func TestE2E_ReadPageNotFound(t *testing.T) {
 	setupE2E(t)
 	fakeID := "00000000-0000-0000-0000-000000000000"
-	r := runNotion(t, "-p", e2eProfile, "fetch-page", fakeID).mustFail(t)
+	r := runNotion(t, "-p", e2eProfile, "read", fakeID).mustFail(t)
 	if !strings.Contains(r.stderr, "Error") {
 		t.Errorf("expected API error, got: %s", r.stderr)
 	}
 }
 
-func TestE2E_FetchPageHexID(t *testing.T) {
+func TestE2E_ReadPageHexID(t *testing.T) {
 	setupE2E(t)
 	hexID := strings.ReplaceAll(scratchPageID, "-", "")
-	r := runNotion(t, "-p", e2eProfile, "fetch-page", hexID).mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "read", "-l", hexID).mustSucceed(t)
 	if !strings.Contains(r.stdout, "page_id:") {
 		t.Errorf("expected metadata block, got: %s", r.stdout)
 	}
 }
 
-func TestE2E_FetchDatabase(t *testing.T) {
+func TestE2E_ReadDatabase(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "fetch-database", testDBID).mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "read", "db:"+testDBID).mustSucceed(t)
 	var data map[string]any
 	if err := json.Unmarshal([]byte(r.stdout), &data); err != nil {
 		t.Fatalf("expected JSON, got: %s\nerr: %v", r.stdout, err)
@@ -748,9 +722,9 @@ func TestE2E_FetchDatabase(t *testing.T) {
 	}
 }
 
-func TestE2E_FetchDataSource(t *testing.T) {
+func TestE2E_ReadDataSource(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "fetch-data-source", testDSID).mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "read", "ds:"+testDSID).mustSucceed(t)
 	var data map[string]any
 	if err := json.Unmarshal([]byte(r.stdout), &data); err != nil {
 		t.Fatalf("expected JSON, got: %s\nerr: %v", r.stdout, err)
@@ -760,9 +734,9 @@ func TestE2E_FetchDataSource(t *testing.T) {
 	}
 }
 
-func TestE2E_QueryDataSource(t *testing.T) {
+func TestE2E_LsDataSource(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "query-data-source", testDSID, "--page-size", "5").mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "ls", "ds:"+testDSID, "--page-size", "5", "--json").mustSucceed(t)
 	var data map[string]any
 	if err := json.Unmarshal([]byte(r.stdout), &data); err != nil {
 		t.Fatalf("expected JSON, got: %s", r.stdout)
@@ -772,20 +746,20 @@ func TestE2E_QueryDataSource(t *testing.T) {
 	}
 }
 
-func TestE2E_QueryDataSourceWithSorts(t *testing.T) {
+func TestE2E_LsDataSourceWithSorts(t *testing.T) {
 	setupE2E(t)
 	sorts := `[{"timestamp": "last_edited_time", "direction": "descending"}]`
-	r := runNotion(t, "-p", e2eProfile, "query-data-source", testDSID, "--sorts", sorts, "--page-size", "3").mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "ls", "ds:"+testDSID, "--sorts", sorts, "--page-size", "3", "--json").mustSucceed(t)
 	if r.stdout == "" {
 		t.Errorf("expected non-empty output")
 	}
 }
 
-func TestE2E_QueryDataSourceWithFilter(t *testing.T) {
+func TestE2E_LsDataSourceWithFilter(t *testing.T) {
 	setupE2E(t)
 	// Match nothing; a syntactically-valid filter is enough to exercise the path.
 	filter := `{"property": "Name", "title": {"equals": "zzz_no_match_e2e_zzz"}}`
-	r := runNotion(t, "-p", e2eProfile, "query-data-source", testDSID, "--filter", filter).mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "ls", "ds:"+testDSID, "--filter", filter, "--json").mustSucceed(t)
 	var data map[string]any
 	if err := json.Unmarshal([]byte(r.stdout), &data); err != nil {
 		t.Fatalf("expected JSON, got: %s", r.stdout)
@@ -793,15 +767,15 @@ func TestE2E_QueryDataSourceWithFilter(t *testing.T) {
 }
 
 // --- write operations (API, destructive) ------------------------------------
-
+//
 // These create or modify resources under the root page. Cleanup at teardown
 // archives every child, so any page created here is wiped out automatically.
 
-func TestE2E_CreatePage(t *testing.T) {
+func TestE2E_Write(t *testing.T) {
 	setupE2E(t)
 	title := fmt.Sprintf("e2e-test-%d", time.Now().UnixNano())
-	r := runNotion(t, "-p", e2eProfile, "create-page", title,
-		"--parent-page-id", rootPageID,
+	r := runNotion(t, "-p", e2eProfile, "write", title,
+		"--parent", rootPageID,
 	).mustSucceed(t)
 	if !strings.Contains(r.stdout, "# ✅ Created Page") {
 		t.Errorf("expected created-page banner, got: %s", r.stdout)
@@ -811,12 +785,12 @@ func TestE2E_CreatePage(t *testing.T) {
 	}
 }
 
-func TestE2E_CreatePageWithContent(t *testing.T) {
+func TestE2E_WriteWithContent(t *testing.T) {
 	setupE2E(t)
 	title := fmt.Sprintf("e2e-content-%d", time.Now().UnixNano())
 	content := "# Hello\nThis is e2e test content."
-	r := runNotion(t, "-p", e2eProfile, "create-page", title,
-		"--parent-page-id", rootPageID,
+	r := runNotion(t, "-p", e2eProfile, "write", title,
+		"--parent", rootPageID,
 		"--content", content,
 	).mustSucceed(t)
 	if !strings.Contains(r.stdout, title) {
@@ -824,10 +798,10 @@ func TestE2E_CreatePageWithContent(t *testing.T) {
 	}
 }
 
-func TestE2E_UpdatePageReplace(t *testing.T) {
+func TestE2E_EditReplace(t *testing.T) {
 	setupE2E(t)
 	content := fmt.Sprintf("e2e replace %d", time.Now().UnixNano())
-	r := runNotion(t, "-p", e2eProfile, "update-page", scratchPageID,
+	r := runNotion(t, "-p", e2eProfile, "edit", scratchPageID,
 		"--replace", "--content", content,
 	).mustSucceed(t)
 	if !strings.Contains(r.stdout, "mode: replace_content") {
@@ -835,13 +809,13 @@ func TestE2E_UpdatePageReplace(t *testing.T) {
 	}
 }
 
-func TestE2E_UpdatePageOldNew(t *testing.T) {
+func TestE2E_EditOldNew(t *testing.T) {
 	setupE2E(t)
 	seed := fmt.Sprintf("UNIQUE_%d", time.Now().UnixNano())
-	runNotion(t, "-p", e2eProfile, "update-page", scratchPageID,
+	runNotion(t, "-p", e2eProfile, "edit", scratchPageID,
 		"--replace", "--content", seed,
 	).mustSucceed(t)
-	r := runNotion(t, "-p", e2eProfile, "update-page", scratchPageID,
+	r := runNotion(t, "-p", e2eProfile, "edit", scratchPageID,
 		"--old", seed, "--new", "REPLACED",
 	).mustSucceed(t)
 	if !strings.Contains(r.stdout, "mode: update_content") {
@@ -849,13 +823,13 @@ func TestE2E_UpdatePageOldNew(t *testing.T) {
 	}
 }
 
-func TestE2E_UpdatePageOldNewReplaceAll(t *testing.T) {
+func TestE2E_EditOldNewReplaceAll(t *testing.T) {
 	setupE2E(t)
 	seed := fmt.Sprintf("TOKEN_%d", time.Now().UnixNano())
-	runNotion(t, "-p", e2eProfile, "update-page", scratchPageID,
+	runNotion(t, "-p", e2eProfile, "edit", scratchPageID,
 		"--replace", "--content", seed+" "+seed,
 	).mustSucceed(t)
-	r := runNotion(t, "-p", e2eProfile, "update-page", scratchPageID,
+	r := runNotion(t, "-p", e2eProfile, "edit", scratchPageID,
 		"--old", seed, "--new", "X", "--replace-all-matches",
 	).mustSucceed(t)
 	if !strings.Contains(r.stdout, "mode: update_content") {
@@ -863,13 +837,13 @@ func TestE2E_UpdatePageOldNewReplaceAll(t *testing.T) {
 	}
 }
 
-// --- create-database / list-block-children / trash-* (happy paths) ---------
+// --- mkdb / ls / rm (happy paths) -----------------------------------------
 
-func TestE2E_CreateDatabase(t *testing.T) {
+func TestE2E_Mkdb(t *testing.T) {
 	setupE2E(t)
 	title := fmt.Sprintf("e2e-create-db-%d", time.Now().UnixNano())
-	r := runNotion(t, "-p", e2eProfile, "create-database", title,
-		"--parent-page-id", rootPageID,
+	r := runNotion(t, "-p", e2eProfile, "mkdb", title,
+		"--parent", rootPageID,
 	).mustSucceed(t)
 	var data map[string]any
 	if err := json.Unmarshal([]byte(r.stdout), &data); err != nil {
@@ -891,9 +865,9 @@ func TestE2E_CreateDatabase(t *testing.T) {
 	}
 }
 
-func TestE2E_ListBlockChildren(t *testing.T) {
+func TestE2E_LsPage(t *testing.T) {
 	setupE2E(t)
-	r := runNotion(t, "-p", e2eProfile, "list-block-children", rootPageID, "--page-size", "100").mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "ls", rootPageID, "--page-size", "100", "--json").mustSucceed(t)
 	var data map[string]any
 	if err := json.Unmarshal([]byte(r.stdout), &data); err != nil {
 		t.Fatalf("expected JSON, got: %s\nerr: %v", r.stdout, err)
@@ -911,15 +885,15 @@ func TestE2E_ListBlockChildren(t *testing.T) {
 	}
 }
 
-func TestE2E_TrashPage(t *testing.T) {
+func TestE2E_RmPage(t *testing.T) {
 	setupE2E(t)
 	title := fmt.Sprintf("e2e-trash-page-%d", time.Now().UnixNano())
-	createR := runNotion(t, "-p", e2eProfile, "create-page", title,
-		"--parent-page-id", rootPageID,
+	createR := runNotion(t, "-p", e2eProfile, "write", title,
+		"--parent", rootPageID,
 	).mustSucceed(t)
 	pageID := mustExtractIDFromMetadata(t, createR.stdout, "page_id")
 
-	r := runNotion(t, "-p", e2eProfile, "trash-page", pageID).mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "rm", pageID).mustSucceed(t)
 	if !strings.Contains(r.stdout, "Moved Page to Trash") {
 		t.Errorf("expected trash banner, got: %s", r.stdout)
 	}
@@ -927,18 +901,18 @@ func TestE2E_TrashPage(t *testing.T) {
 		t.Errorf("expected in_trash: true in metadata, got: %s", r.stdout)
 	}
 	// A trashed page is still fetchable on Notion's API, but the in_trash flag
-	// is preserved on the resource; verify by re-fetching and checking it.
-	refetch := runNotion(t, "-p", e2eProfile, "fetch-page", pageID).mustSucceed(t)
+	// is preserved on the resource; verify by re-reading and checking it.
+	refetch := runNotion(t, "-p", e2eProfile, "read", "-l", pageID).mustSucceed(t)
 	if !strings.Contains(refetch.stdout, "page_id: "+pageID) {
 		t.Errorf("expected refetch to still return the page, got: %s", refetch.stdout)
 	}
 }
 
-func TestE2E_TrashDatabase(t *testing.T) {
+func TestE2E_RmDatabase(t *testing.T) {
 	setupE2E(t)
 	title := fmt.Sprintf("e2e-trash-db-%d", time.Now().UnixNano())
-	createR := runNotion(t, "-p", e2eProfile, "create-database", title,
-		"--parent-page-id", rootPageID,
+	createR := runNotion(t, "-p", e2eProfile, "mkdb", title,
+		"--parent", rootPageID,
 	).mustSucceed(t)
 	var data map[string]any
 	if err := json.Unmarshal([]byte(createR.stdout), &data); err != nil {
@@ -946,10 +920,10 @@ func TestE2E_TrashDatabase(t *testing.T) {
 	}
 	dbID := asString(data["id"])
 	if dbID == "" {
-		t.Fatalf("create-database response missing id: %s", createR.stdout)
+		t.Fatalf("mkdb response missing id: %s", createR.stdout)
 	}
 
-	r := runNotion(t, "-p", e2eProfile, "trash-database", dbID).mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "rm", "db:"+dbID).mustSucceed(t)
 	if !strings.Contains(r.stdout, "Moved Database to Trash") {
 		t.Errorf("expected trash banner, got: %s", r.stdout)
 	}
@@ -957,7 +931,7 @@ func TestE2E_TrashDatabase(t *testing.T) {
 		t.Errorf("expected in_trash: true in metadata, got: %s", r.stdout)
 	}
 	// A trashed database is still fetchable; verify the refetch succeeds.
-	refetch := runNotion(t, "-p", e2eProfile, "fetch-database", dbID).mustSucceed(t)
+	refetch := runNotion(t, "-p", e2eProfile, "read", "db:"+dbID).mustSucceed(t)
 	var refetched map[string]any
 	if err := json.Unmarshal([]byte(refetch.stdout), &refetched); err != nil {
 		t.Fatalf("expected JSON on refetch, got: %s", refetch.stdout)
@@ -967,10 +941,10 @@ func TestE2E_TrashDatabase(t *testing.T) {
 	}
 }
 
-func TestE2E_TrashDataSource(t *testing.T) {
+func TestE2E_RmDataSource(t *testing.T) {
 	setupE2E(t)
 	// Reuse the fixture test database; trash only its data source.
-	r := runNotion(t, "-p", e2eProfile, "trash-data-source", testDSID).mustSucceed(t)
+	r := runNotion(t, "-p", e2eProfile, "rm", "ds:"+testDSID).mustSucceed(t)
 	if !strings.Contains(r.stdout, "Moved Data Source to Trash") {
 		t.Errorf("expected trash banner, got: %s", r.stdout)
 	}
@@ -978,7 +952,7 @@ func TestE2E_TrashDataSource(t *testing.T) {
 		t.Errorf("expected in_trash: true in metadata, got: %s", r.stdout)
 	}
 	// A trashed data source is still fetchable; verify the refetch succeeds.
-	refetch := runNotion(t, "-p", e2eProfile, "fetch-data-source", testDSID).mustSucceed(t)
+	refetch := runNotion(t, "-p", e2eProfile, "read", "ds:"+testDSID).mustSucceed(t)
 	var refetched map[string]any
 	if err := json.Unmarshal([]byte(refetch.stdout), &refetched); err != nil {
 		t.Fatalf("expected JSON on refetch, got: %s", refetch.stdout)
@@ -999,4 +973,3 @@ func mustExtractIDFromMetadata(t *testing.T, output, key string) string {
 	}
 	return m[1]
 }
-

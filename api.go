@@ -17,6 +17,13 @@ var (
 	hex32Re = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 )
 
+// Test seams: apiBaseURL and httpClient are overridable so tests can point
+// the CLI at a local httptest server instead of the real Notion API.
+var (
+	apiBaseURL = "https://api.notion.com"
+	httpClient = &http.Client{}
+)
+
 func normalizeNotionID(rawID, objectLabel string) (string, error) {
 	value := strings.TrimSpace(rawID)
 	if uuidRe.MatchString(value) {
@@ -45,7 +52,7 @@ func headers(secret string) map[string]string {
 }
 
 func notionRequest(method, path, secret string, body map[string]any) (map[string]any, error) {
-	url := "https://api.notion.com" + path
+	url := apiBaseURL + path
 	var reqBody io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -63,7 +70,7 @@ func notionRequest(method, path, secret string, body map[string]any) (map[string
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -113,50 +120,36 @@ func asString(v any) string {
 	return s
 }
 
-func buildCreatePageParent(parentPageID, parentDataSourceID string) (map[string]any, error) {
-	hasPageParent := strings.TrimSpace(parentPageID) != ""
-	hasDataSourceParent := strings.TrimSpace(parentDataSourceID) != ""
-	if hasPageParent == hasDataSourceParent {
-		return nil, cliError{"create-page requires exactly one of --parent-page-id or --parent-data-source-id (not both, not neither)."}
+// firstDataSourceID returns the id of the first data source attached to a
+// database object, or "" if there is none.
+func firstDataSourceID(obj map[string]any) string {
+	dss, ok := obj["data_sources"].([]any)
+	if !ok || len(dss) == 0 {
+		return ""
 	}
-	if hasPageParent {
-		norm, err := normalizeNotionID(parentPageID, "page")
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"type": "page_id", "page_id": norm}, nil
+	first, ok := dss[0].(map[string]any)
+	if !ok {
+		return ""
 	}
-	norm, err := normalizeNotionID(parentDataSourceID, "data source")
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"type": "data_source_id", "data_source_id": norm}, nil
+	return asString(first["id"])
 }
 
-func extractTitlePropertyName(dataSource map[string]any) (string, error) {
-	props := asMap(dataSource["properties"])
-	if len(props) == 0 {
-		return "", cliError{"Selected data source has no properties."}
-	}
-	for name, propAny := range props {
-		if asString(asMap(propAny)["type"]) == "title" {
-			return name, nil
-		}
-	}
-	return "", cliError{"Selected data source has no title property."}
-}
-
-func buildCreatePageBody(title, parentPageID, parentDataSourceID, content, contentFile, dataSourceTitleProp string) (map[string]any, error) {
+func buildCreatePageBody(title, parentKind, parentID, content, contentFile, dataSourceTitleProp string) (map[string]any, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil, cliError{"Title cannot be empty."}
 	}
-	parent, err := buildCreatePageParent(parentPageID, parentDataSourceID)
-	if err != nil {
-		return nil, err
+	var parent map[string]any
+	switch parentKind {
+	case "page":
+		parent = map[string]any{"type": "page_id", "page_id": parentID}
+	case "data_source":
+		parent = map[string]any{"type": "data_source_id", "data_source_id": parentID}
+	default:
+		return nil, cliError{"Parent must be a page or data source."}
 	}
 	titleProp := "title"
-	if asString(parent["type"]) == "data_source_id" {
+	if parentKind == "data_source" {
 		if dataSourceTitleProp == "" {
 			return nil, cliError{"Unable to determine title property for the selected data source."}
 		}
@@ -180,27 +173,33 @@ func buildCreatePageBody(title, parentPageID, parentDataSourceID, content, conte
 	return body, nil
 }
 
-func buildMovePageBody(parentPageID, parentDataSourceID, pageID string) (map[string]any, map[string]any, error) {
-	if parentPageID != "" {
-		parentID, err := normalizeNotionID(parentPageID, "page")
-		if err != nil {
-			return nil, nil, err
+func extractTitlePropertyName(dataSource map[string]any) (string, error) {
+	props := asMap(dataSource["properties"])
+	if len(props) == 0 {
+		return "", cliError{"Selected data source has no properties."}
+	}
+	for name, propAny := range props {
+		if asString(asMap(propAny)["type"]) == "title" {
+			return name, nil
 		}
+	}
+	return "", cliError{"Selected data source has no title property."}
+}
+
+func buildMovePageBody(parentKind, parentID, pageID string) (map[string]any, map[string]any, error) {
+	switch parentKind {
+	case "page":
 		if parentID == pageID {
-			return nil, nil, cliError{"--parent-page-id must be different from the page being moved."}
+			return nil, nil, cliError{"--parent must be different from the page being moved."}
 		}
 		parent := map[string]any{"type": "page_id", "page_id": parentID}
 		return parent, map[string]any{"parent": parent}, nil
-	}
-	if parentDataSourceID != "" {
-		dataSourceID, err := normalizeNotionID(parentDataSourceID, "data source")
-		if err != nil {
-			return nil, nil, err
-		}
-		parent := map[string]any{"type": "data_source_id", "data_source_id": dataSourceID}
+	case "data_source":
+		parent := map[string]any{"type": "data_source_id", "data_source_id": parentID}
 		return parent, map[string]any{"parent": parent}, nil
+	default:
+		return nil, nil, cliError{"Parent must be a page or data source."}
 	}
-	return nil, nil, cliError{"move-page requires one of --parent-page-id or --parent-data-source-id."}
 }
 
 func buildUpdatePageBody(replace bool, content, contentFile string, olds, news []string, replaceAll, allowDeleting bool) (string, map[string]any, error) {

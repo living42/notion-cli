@@ -82,10 +82,80 @@ func renderMetadataBlock(lines []string) string {
 	return "<!-- metadata\n" + strings.Join(lines, "\n") + "\n-->"
 }
 
-func printPrettyJSON(data map[string]any) {
+// prettyJSON renders a Notion response object as indented JSON. It replaces the
+// old printPrettyJSON (which printed directly); callers now print the string.
+func prettyJSON(data map[string]any) string {
 	b, _ := json.MarshalIndent(data, "", "  ")
-	fmt.Println(string(b))
+	return string(b)
 }
+
+// listMetadataLines builds the pagination/request metadata lines shared by the
+// compact and long list/search renderers.
+func listMetadataLines(data map[string]any) []string {
+	meta := []string{}
+	if hasMore, ok := data["has_more"].(bool); ok && hasMore {
+		meta = append(meta, "has_more: true")
+	}
+	if next := asString(data["next_cursor"]); next != "" {
+		meta = append(meta, "next_cursor: "+next)
+	}
+	if reqID := asString(data["request_id"]); reqID != "" {
+		meta = append(meta, "request_id: "+reqID)
+	}
+	return meta
+}
+
+func appendMetadata(body string, data map[string]any) string {
+	meta := listMetadataLines(data)
+	if len(meta) > 0 {
+		return body + "\n\n---\n\n" + renderMetadataBlock(meta)
+	}
+	return body
+}
+
+// blockTitle returns the title of a child_page/child_database block, or "" for
+// blocks that have no title.
+func blockTitle(m map[string]any) string {
+	blockType := asString(m["type"])
+	inner := asMap(m[blockType])
+	return asString(inner["title"])
+}
+
+// dsName returns the name of a data source entry (as found in a database's
+// data_sources array).
+func dsName(m map[string]any) string {
+	return asString(m["name"])
+}
+
+// pageMetadataLines builds the metadata footer lines for a page read/markdown
+// response (shared by formatFetchOutput and read's --metadata mode).
+func pageMetadataLines(data map[string]any, sliceRange *[2]int) []string {
+	unknown := asSlice(data["unknown_block_ids"])
+	unknownStr := "[]"
+	if len(unknown) > 0 {
+		parts := make([]string, 0, len(unknown))
+		for _, u := range unknown {
+			parts = append(parts, asString(u))
+		}
+		unknownStr = strings.Join(parts, ", ")
+	}
+	truncated := false
+	if t, ok := data["truncated"].(bool); ok {
+		truncated = t
+	}
+	meta := []string{
+		"page_id: " + asString(data["id"]),
+		fmt.Sprintf("truncated: %t", truncated),
+		"unknown_block_ids: " + unknownStr,
+		"request_id: " + asString(data["request_id"]),
+	}
+	if sliceRange != nil {
+		meta = append(meta, fmt.Sprintf("slice: %d-%d", sliceRange[0], sliceRange[1]))
+	}
+	return meta
+}
+
+// --- search / find ---------------------------------------------------------
 
 func formatSearchResult(page map[string]any) string {
 	icon := extractIcon(page)
@@ -113,6 +183,7 @@ func formatSearchResult(page map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
+// formatSearchOutput is the long (-l) search/find renderer.
 func formatSearchOutput(data map[string]any) string {
 	results := asSlice(data["results"])
 	sections := make([]string, 0, len(results))
@@ -123,21 +194,32 @@ func formatSearchOutput(data map[string]any) string {
 	if len(sections) > 0 {
 		body = strings.Join(sections, "\n\n")
 	}
-	meta := []string{}
-	if hasMore, ok := data["has_more"].(bool); ok && hasMore {
-		meta = append(meta, "has_more: true")
-	}
-	if next := asString(data["next_cursor"]); next != "" {
-		meta = append(meta, "next_cursor: "+next)
-	}
-	if reqID := asString(data["request_id"]); reqID != "" {
-		meta = append(meta, "request_id: "+reqID)
-	}
-	if len(meta) > 0 {
-		return body + "\n\n---\n\n" + renderMetadataBlock(meta)
-	}
-	return body
+	return appendMetadata(body, data)
 }
+
+// formatFindCompact is the default find renderer: one line per result
+// ("type id title"), pipe-friendly.
+func formatFindCompact(data map[string]any) string {
+	results := asSlice(data["results"])
+	lines := make([]string, 0, len(results))
+	for _, r := range results {
+		m := asMap(r)
+		objType := asString(m["object"])
+		if objType == "" {
+			objType = "page"
+		}
+		id := asString(m["id"])
+		title := extractTitle(m)
+		lines = append(lines, fmt.Sprintf("%s %s %s", objType, id, title))
+	}
+	body := "_No results._"
+	if len(lines) > 0 {
+		body = strings.Join(lines, "\n")
+	}
+	return appendMetadata(body, data)
+}
+
+// --- read / fetch ----------------------------------------------------------
 
 func convertNotionMarkdown(raw string) string {
 	rePage := regexp.MustCompile(`<page url="([^"]+)">([^<]*)</page>`)
@@ -149,6 +231,8 @@ func convertNotionMarkdown(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
+// formatFetchOutput is the long (-l) page read renderer (title + URL + body +
+// metadata footer).
 func formatFetchOutput(data, pageMeta map[string]any, sliceRange *[2]int) string {
 	icon := extractIcon(pageMeta)
 	title := extractTitle(pageMeta)
@@ -172,30 +256,78 @@ func formatFetchOutput(data, pageMeta map[string]any, sliceRange *[2]int) string
 		body = strings.Join(lines[start:end], "\n")
 	}
 
-	unknown := asSlice(data["unknown_block_ids"])
-	unknownStr := "[]"
-	if len(unknown) > 0 {
-		parts := make([]string, 0, len(unknown))
-		for _, u := range unknown {
-			parts = append(parts, asString(u))
-		}
-		unknownStr = strings.Join(parts, ", ")
-	}
-	truncated := false
-	if t, ok := data["truncated"].(bool); ok {
-		truncated = t
-	}
-	meta := []string{
-		"page_id: " + asString(data["id"]),
-		fmt.Sprintf("truncated: %t", truncated),
-		"unknown_block_ids: " + unknownStr,
-		"request_id: " + asString(data["request_id"]),
-	}
-	if sliceRange != nil {
-		meta = append(meta, fmt.Sprintf("slice: %d-%d", sliceRange[0], sliceRange[1]))
-	}
-	return header + "\n\n" + body + "\n\n---\n\n" + renderMetadataBlock(meta)
+	return header + "\n\n" + body + "\n\n---\n\n" + renderMetadataBlock(pageMetadataLines(data, sliceRange))
 }
+
+// --- ls --------------------------------------------------------------------
+
+// formatLsCompact is the default ls renderer: one line per child
+// ("type id title"), pipe-friendly. The rendered fields depend on kind:
+//
+//	page        → block children ("<blockType> <id> <title?>")
+//	database    → data sources ("data_source <id> <name>")
+//	data_source → rows ("page <id> <title>")
+func formatLsCompact(kind string, data map[string]any) string {
+	var lines []string
+	switch kind {
+	case "page":
+		for _, r := range asSlice(data["results"]) {
+			m := asMap(r)
+			blockType := asString(m["type"])
+			if blockType == "" {
+				blockType = asString(m["object"])
+			}
+			lines = append(lines, fmt.Sprintf("%s %s %s", blockType, asString(m["id"]), blockTitle(m)))
+		}
+	case "database":
+		for _, r := range asSlice(data["data_sources"]) {
+			m := asMap(r)
+			lines = append(lines, fmt.Sprintf("data_source %s %s", asString(m["id"]), dsName(m)))
+		}
+	case "data_source":
+		for _, r := range asSlice(data["results"]) {
+			m := asMap(r)
+			lines = append(lines, fmt.Sprintf("page %s %s", asString(m["id"]), extractTitle(m)))
+		}
+	}
+	body := "_No results._"
+	if len(lines) > 0 {
+		body = strings.Join(lines, "\n")
+	}
+	return appendMetadata(body, data)
+}
+
+// formatLsLong is the -l ls renderer. For pages it renders a multi-line block
+// per child; for databases/data sources the content is structural, so it falls
+// back to the raw JSON.
+func formatLsLong(kind string, data map[string]any) string {
+	if kind != "page" {
+		return prettyJSON(data)
+	}
+	results := asSlice(data["results"])
+	sections := make([]string, 0, len(results))
+	for _, r := range results {
+		m := asMap(r)
+		blockType := asString(m["type"])
+		if blockType == "" {
+			blockType = asString(m["object"])
+		}
+		title := blockTitle(m)
+		lines := []string{
+			fmt.Sprintf("## %s", ifEmpty(title, blockType)),
+			"- **Type:** " + blockType,
+			"- **ID:** " + asString(m["id"]),
+		}
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
+	body := "_No results._"
+	if len(sections) > 0 {
+		body = strings.Join(sections, "\n\n")
+	}
+	return appendMetadata(body, data)
+}
+
+// --- create / move / update / trash ---------------------------------------
 
 func formatUpdatePageOutput(updateData, pageMeta map[string]any, mode string) string {
 	title := extractTitle(pageMeta)
