@@ -1,3 +1,0 @@
-- supports page content update
-- api reference: https://developers.notion.com/reference/update-page-markdown.md
-- update_content, replace_content
