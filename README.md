@@ -42,8 +42,6 @@ notion mv 3c90c3cc… --parent fed321cb…        # move a page to a new parent
 notion rm 3c90c3cc…                           # move a resource to trash
 ```
 
-Resources are addressed as `[type:]id`: a bare ID is a page; use the `db:` or `ds:` prefix for databases and data sources (e.g. `read db:<id>`, `ls ds:<id>`, `rm db:<id>`). Every command takes `-p/--profile`, and output has three modes — compact text by default, `-l` for rich text, `--json` for raw Notion JSON.
-
 ---
 
 ## License
