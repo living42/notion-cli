@@ -18,6 +18,10 @@ import (
 
 const notionVersion = "2025-09-03"
 
+// version is the notion-cli version. It is injected at build time via ldflags
+// (-ldflags "-X main.version=<tag>") and defaults to "dev" for local builds.
+var version = "dev"
+
 var (
 	uuidRe  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	hex32Re = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
@@ -1058,6 +1062,7 @@ func (s *stringSliceFlag) Set(v string) error {
 
 func globalUsage() {
 	fmt.Println(`usage: notion [-h] [-p PROFILE] <command> ...
+       notion -v | --version
 
 Lightweight Notion CLI for searching, reading, creating, moving, and updating
 pages, databases, and data sources.
@@ -1080,12 +1085,18 @@ func run(argv []string) error {
 	global.SetOutput(io.Discard)
 	profile := global.String("profile", "default", "")
 	global.StringVar(profile, "p", "default", "")
+	showVersion := global.Bool("version", false, "")
+	global.BoolVar(showVersion, "v", false, "")
 	if err := global.Parse(normalized); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			globalUsage()
 			return nil
 		}
 		return err
+	}
+	if *showVersion {
+		fmt.Printf("notion version %s\n", version)
+		return nil
 	}
 	args := global.Args()
 	if len(args) == 0 {

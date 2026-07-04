@@ -6,7 +6,7 @@ A lightweight, zero-setup command-line tool to search, read, create, move, and u
 
 ## Features
 
-- **One-liner installation** — No `pip install`, no virtual environments. Just run it.
+- **One-liner installation** — A single `curl | bash` downloads a pre-built binary for your platform. No toolchain required.
 - **Readable Markdown output** — `search`, `fetch-page`, `create-page`, `move-page`, and `update-page` produce compact Markdown output.
 - **Database + data source support** — Fetch databases, fetch data sources, and query data sources.
 - **Pretty JSON where it helps** — `fetch-database`, `fetch-data-source`, and `query-data-source` return pretty-printed JSON.
@@ -22,7 +22,25 @@ A lightweight, zero-setup command-line tool to search, read, create, move, and u
 
 ## Installation
 
-Install with:
+Install the latest pre-built binary for your platform (macOS / Linux, amd64 / arm64) with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/living42/notion-cli/main/install.sh | bash
+```
+
+The script detects your OS and architecture, downloads the matching binary from the latest [release](https://github.com/living42/notion-cli/releases), verifies its checksum, and installs it. The default install location is `/usr/local/bin` (falling back to `~/.local/bin` when that isn't writable).
+
+Options:
+
+```bash
+# Install a specific version
+curl -fsSL https://raw.githubusercontent.com/living42/notion-cli/main/install.sh | bash -s -- --version v1.2.3
+
+# Install into a custom directory
+curl -fsSL https://raw.githubusercontent.com/living42/notion-cli/main/install.sh | bash -s -- --bin-dir ~/bin
+```
+
+Alternatively, build from source with Go 1.24+:
 
 ```bash
 go install github.com/living42/notion-cli@latest
@@ -261,9 +279,6 @@ Your integration may be missing the required Notion capability. Use **Insert Con
 
 **"Error 404: Not found"**
 Check the ID and make sure your integration has access.
-
-**"uv: command not found"**
-Install `uv` from [docs.astral.sh/uv](https://docs.astral.sh/uv/).
 
 ---
 

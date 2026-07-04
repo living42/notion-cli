@@ -1,0 +1,12 @@
+# Compiled binaries
+/notion
+/notion-cli
+*.exe
+
+# Test / build artifacts
+dist/
+
+# Leftover Python caches (this project is now Go)
+__pycache__/
+*.pyc
+.mypy_cache/
